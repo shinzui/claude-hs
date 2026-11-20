@@ -15,3 +15,5 @@ Create a `Client` once and share it across calls to reuse connections. `defaultC
 See [Messages coverage](docs/messages-coverage.md) for request options, model restrictions and continuation behavior.
 
 Use `Claude.Streaming.streamMessage` for SSE. The callback receives typed events synchronously and returns `Continue` or `Stop`. Inspect the terminal result for provider completion or caller stop. Keep partial output in the callback if the caller needs it after a stream failure.
+
+Use `Claude.Batches` to submit, retrieve, list and cancel asynchronous batches. `consumeBatchResults` reads JSON Lines incrementally from the configured origin. Correlate outcomes with the original custom IDs.

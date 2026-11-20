@@ -16,6 +16,11 @@ provenance:
       at: 2026-11-20T20:25:29Z
       mode: "update"
       note: "Use the Seihou-generated Nix development shell for client builds and tests."
+    - model: "gpt-6.2-sol"
+      harness: "codex-cli"
+      at: 2026-11-20T20:43:54Z
+      mode: "implement"
+      note: "Implement batch lifecycle and incrementally validate enriched results."
 ---
 
 # Submit message batches and consume their results
@@ -32,8 +37,8 @@ A caller can submit independent Messages requests as one batch, inspect its prog
 
 ## Progress
 
-- [ ] Create, retrieve, list and cancel use the expected routes and typed metadata.
-- [ ] A consumer receives mixed outcomes incrementally and matches each result by custom ID.
+- [x] 2026-11-20. The loopback captures enriched submission parameters, both pagination queries and the cancellation route. Running and terminal metadata decode with typed timestamps.
+- [x] 2026-11-20. The first result releases a server-side gate before EOF. Four outcomes arrive in reverse custom ID order, and a malformed later line preserves the earlier delivery.
 
 ## Surprises & Discoveries
 
@@ -44,6 +49,8 @@ A caller can submit independent Messages requests as one batch, inspect its prog
 
 
 ## Outcomes & Retrospective
+
+The locked-shell build and credential-free tests passed. The batch result route derives from the configured origin and validated batch ID. The fixture supplies an unrelated results URL to verify that it remains metadata. The enriched batch request and successful result reuse the same feature codecs as Messages.
 
 
 
