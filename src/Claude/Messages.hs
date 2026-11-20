@@ -2,6 +2,7 @@
 module Claude.Messages
   ( MessageRequest (..),
     withRequestControls,
+    messageRequestControls,
     CountRequest (..),
     Conversation (..),
     conversationHistory,
@@ -26,6 +27,8 @@ module Claude.Messages
     TokenCount (..),
     MaxTokens,
     maxTokens,
+    maxTokensValue,
+    cacheOnly,
     createMessage,
     countTokens,
   )
@@ -33,11 +36,11 @@ where
 
 import Claude.Client (Client, ClientError, RequestOptions, Response)
 import Claude.Internal.Http (jsonRequest)
-import Claude.Internal.Request (validateMessages)
+import Claude.Internal.Request (MessagesEndpoint (Count, Create), validateMessages)
 import Claude.Messages.Features
 import Claude.Messages.Usage (OutputTokenDetails (..), ServerToolCounts (..), UsageEvidence (..), UsageIteration (..))
 import Control.Applicative ((<|>))
-import Control.Lens ((^.))
+import Control.Lens ((&), (.~), (^.))
 import Data.Aeson (FromJSON (..), Key, Object, ToJSON (..), Value (..), object, withObject, withText, (.!=), (.:), (.:?), (.=))
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (Pair, Parser)
@@ -167,6 +170,13 @@ maxTokens :: Natural -> Maybe MaxTokens
 maxTokens 0 = Nothing
 maxTokens n = Just (MaxTokens n)
 
+maxTokensValue :: MaxTokens -> Natural
+maxTokensValue (MaxTokens value) = value
+
+-- | Populate the prompt cache without generating output in unary Messages.
+cacheOnly :: MaxTokens
+cacheOnly = MaxTokens 0
+
 data MessageRequest
   = MessageRequest
       { conversation :: !Conversation,
@@ -184,6 +194,11 @@ data MessageRequest
 withRequestControls :: RequestControls -> MessageRequest -> MessageRequest
 withRequestControls controls request =
   MessageRequestWithControls (request ^. #conversation) (request ^. #outputLimit) (request ^. #stopSequences) controls
+
+messageRequestControls :: MessageRequest -> RequestControls
+messageRequestControls = \case
+  MessageRequestWithControls _ _ _ controls -> controls
+  MessageRequest {} -> defaultRequestControls
 
 newtype CountRequest = CountRequest Conversation
   deriving stock (Eq, Show)
@@ -220,7 +235,7 @@ instance ToJSON MessageRequest where
     object $
       ["max_tokens" .= (request ^. #outputLimit)]
         <> conversationFields (request ^. #conversation)
-        <> (case request of MessageRequestWithControls _ _ _ controls -> generationFields controls; _ -> [])
+        <> generationFields (messageRequestControls request)
         <> ["stop_sequences" .= stops | let stops = request ^. #stopSequences, not (null stops)]
 
 instance ToJSON CountRequest where
@@ -249,7 +264,7 @@ instance FromJSON CountRequest where
 instance FromJSON MessageRequest where
   parseJSON = withObject "Messages request" $ \o -> do
     convo <- parseConversation o
-    limit <- o .: "max_tokens" >>= maybe (fail "Messages require positive max_tokens") pure . maxTokens
+    limit <- MaxTokens <$> o .: "max_tokens"
     stops <- o .:? "stop_sequences" .!= []
     context <- o .:? "context_management" >>= traverse (withObject "context management" (.: "edits"))
     controls <-
@@ -371,11 +386,9 @@ assistantContinuation response = do
 continueMessage :: MessageRequest -> MessageResponse -> NonEmpty InputBlock -> Maybe MessageRequest
 continueMessage request response next = do
   let original = request ^. #conversation
-      controls = case request of
-        MessageRequestWithControls _ _ _ configured -> configured
-        MessageRequest {} -> defaultRequestControls
+      controls = messageRequestControls request
       retained = replayableHistory (response ^. #content)
-  assistant <- assistantContinuation (response {content = retained})
+  assistant <- assistantContinuation (response & #content .~ retained)
   let history = conversationHistory original <> [assistant, Message User next]
       updated = request {conversation = withConversationHistory history original}
   pure $ case response ^. #container of
@@ -420,12 +433,12 @@ instance FromJSON TokenCount where
 
 createMessage :: Client -> RequestOptions -> MessageRequest -> IO (Either ClientError (Response MessageResponse))
 createMessage client options request =
-  case validateMessages client True (toJSON request) of
+  case validateMessages client Create (toJSON request) of
     Left err -> pure (Left err)
     Right fields -> jsonRequest client "POST" "/v1/messages" [] options (Just (Object fields))
 
 countTokens :: Client -> RequestOptions -> CountRequest -> IO (Either ClientError (Response TokenCount))
 countTokens client options request =
-  case validateMessages client False (toJSON request) of
+  case validateMessages client Count (toJSON request) of
     Left err -> pure (Left err)
     Right fields -> jsonRequest client "POST" "/v1/messages/count_tokens" [] options (Just (Object fields))

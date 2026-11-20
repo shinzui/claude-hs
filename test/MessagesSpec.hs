@@ -45,6 +45,7 @@ run = do
   tokensRoundtrip
   failureCases
   requestControlsRoundtrip
+  cachePrewarm
   advancedRequestRoundtrip
   advancedContinuation
   fallbackContinuation
@@ -406,3 +407,20 @@ unaryEvidence = do
     createMessage client defaultRequestOptions {extraHeaders = [("x-case", "malformed")]} request >>= \case
       Left (DecodeError _ _) -> pure ()
       _ -> fail "expected malformed stop details to fail decoding"
+
+cachePrewarm :: IO ()
+cachePrewarm = do
+  let request = MessageRequest baseConversation cacheOnly []
+      expected = object ["model" .= ("candidate-model" :: Text), "max_tokens" .= (0 :: Int), "messages" .= [userHello]]
+      fixture = addField "stop_reason" "max_tokens" (messageFixture [])
+      app = capture expected (json status200 [] fixture)
+  withClient app $ \client -> do
+    Response _ result <- createMessage client defaultRequestOptions request >>= expectRight
+    assertEqual "cache-only stop" (Just MaxTokensReached) (result ^. #stopReason)
+    Claude.streamMessage client defaultRequestOptions request (\_ _ -> pure Claude.Continue) >>= \case
+      Left (InvalidRequest _) -> pure ()
+      _ -> fail "cache-only request must be unary"
+    ident <- maybe (fail "invalid test ID") pure (mkCustomId "cache-only")
+    createBatch client defaultRequestOptions (BatchItem ident request :| []) >>= \case
+      Left (InvalidRequest _) -> pure ()
+      _ -> fail "cache-only request cannot be batched"

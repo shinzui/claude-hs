@@ -5,6 +5,8 @@ import Claude.Internal.Http (BodyReader, ClientError)
 import Control.Monad.Trans.Except (ExceptT)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
+import Data.ByteString.Char8 qualified as BSC
+import Data.Char (isSpace)
 
 -- | A handler may finish early with a value. A trailing incomplete event
 -- never dispatches. The consumer decides what EOF means for the protocol.
@@ -30,9 +32,13 @@ foldEvents readBody handle = feed initialFrame [] BS.empty
     acceptLine frame line
       | BS.null line = case frame of
           Frame _ [] -> pure (Right initialFrame)
-          Frame name parts -> do
-            result <- handle name (BS.intercalate "\n" (reverse parts))
-            pure (maybe (Right initialFrame) Left result)
+          Frame name parts ->
+            let payload = BS.intercalate "\n" (reverse parts)
+             in if BSC.all isSpace payload
+                  then pure (Right initialFrame)
+                  else do
+                    result <- handle name payload
+                    pure (maybe (Right initialFrame) Left result)
       | otherwise = pure (Right (addField frame line))
 
 data Frame = Frame !(Maybe ByteString) ![ByteString]

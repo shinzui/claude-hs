@@ -1,5 +1,5 @@
 -- | Validate the envelope shared by typed requests and the streaming bridge.
-module Claude.Internal.Request (validateMessages) where
+module Claude.Internal.Request (MessagesEndpoint (..), validateMessages) where
 
 import Claude.Internal.Http (Client, ClientError (..), clientApiVersion)
 import Control.Monad (when)
@@ -11,17 +11,20 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
 
-validateMessages :: Client -> Bool -> Value -> Either ClientError Object
-validateMessages client generates =
+data MessagesEndpoint = Create | Stream | Count | Batch
+  deriving stock (Eq)
+
+validateMessages :: Client -> MessagesEndpoint -> Value -> Either ClientError Object
+validateMessages client endpoint =
   either (Left . InvalidRequest . Text.pack) Right . parseEither (withObject "Messages request" validate)
   where
     current = clientApiVersion client == Just "2026-10-21"
     validate fields = do
       model <- fields .: "model"
       when (Text.null model) (fail "Messages require a model ID")
-      when generates $ do
+      when (endpoint /= Count) $ do
         limit <- fields .: "max_tokens"
-        when ((limit :: Natural) == 0) (fail "Messages require positive max_tokens")
+        when ((limit :: Natural) == 0 && endpoint /= Create) (fail "Streaming and batches require positive max_tokens")
       history <- fields .: "messages" :: Parser [Value]
       when current $ do
         when (null history) (fail "Messages require a nonempty conversation")

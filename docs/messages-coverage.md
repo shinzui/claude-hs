@@ -45,3 +45,32 @@ See [mid-conversation system messages](https://platform.claude.com/docs/en/build
 | Error categories | `apiErrorCategory` maps provider error tags to an open enumeration. HTTP status, transport, stream and JSON decode failures keep their existing `ClientError` alternatives. |
 
 The documented tool-search replay includes its result and references. Documented code execution replay can include a completed tool result. The programmatic continuation fixture preserves both, alongside the pending call and container. [Tool search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool), [programmatic tool calling](https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling), [fallback](https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback).
+
+For an eligible model, combine the programmatic caller with deferred tool search.
+Keep the same tool list on later requests and pass the result of `continueMessage`
+to `createMessage` with the original client and request options.
+
+```haskell
+import Claude.Messages
+import Data.Aeson (Value (String))
+import Data.Aeson.KeyMap qualified as KeyMap
+
+lookupFeatures :: MessageFeatures
+lookupFeatures =
+  defaultMessageFeatures
+    { tools =
+        [ CodeExecutionTool CodeExecution20260120 Nothing,
+          ToolSearchTool BM25Search20251119 Nothing,
+          ConfiguredTool
+            (ClientTool "lookup" (Just "Look up a catalog entry") schema Nothing Nothing)
+            (ToolLoading (Just True) (Just [AllowDirect, AllowCodeExecution CodeExecution20260120]))
+        ]
+    }
+  where
+    schema = KeyMap.singleton "type" (String "object")
+```
+
+For unary prompt cache pre-warming, use `cacheOnly` as the output limit and
+copy the prompt and cache settings from the generation request. The
+`cachePrewarm` fixture verifies a zero-token unary body and pre-dispatch
+rejection of the same limit for streams and batches. [Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)

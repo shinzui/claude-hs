@@ -17,7 +17,7 @@ where
 
 import Claude.Client
 import Claude.Internal.Http (BodyReader, decodeResponse, redactApiError, runRequest)
-import Claude.Internal.Request (validateMessages)
+import Claude.Internal.Request qualified as Request
 import Claude.Internal.Sse (foldEvents)
 import Claude.Messages
 import Claude.Messages.Usage (mergeUsageEvidence)
@@ -183,7 +183,7 @@ streamMessageValue ::
   (ResponseMetadata -> StreamEvent -> IO StreamControl) ->
   IO (Either ClientError (Response StreamEnd))
 streamMessageValue client options body consume =
-  case validateMessages client True body of
+  case Request.validateMessages client Request.Stream body of
     Left err -> pure (Left err)
     Right fields ->
       runRequest client "POST" "/v1/messages" [] options "text/event-stream" (Just (Object (KeyMap.insert "stream" (Bool True) fields))) $ \meta readBody ->

@@ -50,6 +50,8 @@ The locked-shell producer suite passed. The [Baikai comparison patch](../../inte
 
 ## Surprises & Discoveries
 
+The Baikai mapper accepts an explicit zero output limit. The current API documents this as unary cache pre-warming. The candidate now represents it with `cacheOnly` and rejects it before streaming or batch dispatch. [Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+
 ## Decision Log
 
 ## Outcomes & Retrospective
