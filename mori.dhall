@@ -1,0 +1,26 @@
+let Schema =
+      https://raw.githubusercontent.com/shinzui/mori-schema/94bc56785e632a3b7a3f260d66dfea9570e1bef3/package.dhall
+        sha256:98c63c91aa308963b92bcdd08132be1965795a13ea03e25e6638775ecaf1bdc7
+
+in  Schema.Project::{
+    , project = Schema.ProjectIdentity::{
+      , name = "claude-hs"
+      , namespace = "shinzui"
+      , stableId = Some "project_01m7xa0y0sezcaabge5b5n3fdx"
+      , type = Schema.PackageType.Library
+      , language = Schema.Language.Haskell
+      , lifecycle = Schema.Lifecycle.Active
+      , description = Some "Haskell client for the Anthropic Claude Messages API"
+      , owners = [ "shinzui" ]
+      , domains = [ "ai", "api" ]
+      }
+    , repos =
+      [ Schema.Repo::{
+        , name = "claude-hs"
+        , github = Some "shinzui/claude-hs"
+        , localPath = Some "."
+        }
+      ]
+    , standardRefs =
+      [ Schema.MoriRef::{ namespace = "shinzui", name = "haskell-jitsurei" } ]
+    }
