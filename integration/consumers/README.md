@@ -127,8 +127,9 @@ per dispatch on success, terminal failure and cancellation.
 
 ### Adoption gate
 
-Baikai's checked-in dependency source is Hackage. The final adoption check
-requires a published `claude-hs` package and a fresh Baikai checkout of the
-adoption commit. Hackage returned 404 for `claude-hs`, and `cabal check`
-reported that its missing license blocks the release. The local
-`cabal.project.local` used here is specific to the pinned trial.
+The gate passed at `f3cdaff4a0ae8af573ee55c05927200510941f2a` in
+`mori://shinzui/baikai/repos/baikai`. From a fresh checkout of that commit,
+run the provider-suite command above with its checked-in Cabal project.
+The solver selected the Hackage release `claude-hs` 0.1.0.0. All 475 tests
+passed and the dependency plan contained zero Mercury packages.
+[Adoption evidence](resolved-mercury-parity.json)

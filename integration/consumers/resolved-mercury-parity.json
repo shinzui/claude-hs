@@ -97,5 +97,27 @@
     "tests": {
       "baikai-claude-test": 475
     }
+  },
+  "adoptedBaikai": {
+    "repository": "mori://shinzui/baikai/repos/baikai",
+    "revision": "f3cdaff4a0ae8af573ee55c05927200510941f2a",
+    "compiler": "ghc-9.12.4",
+    "cabal": "3.16.1.0",
+    "packages": {
+      "claude-hs": {
+        "version": "0.1.0.0",
+        "source": "repo-tar",
+        "repository": "http://hackage.haskell.org/",
+        "releaseCommit": "18a58f2d8a98541bdda7b7e53b0ffd3cee844095",
+        "archiveSha256": "3c4cb5b767fbc2ae02f6e3e61a567193b36e216e1cdf9db92156e7a1b235d4ca"
+      }
+    },
+    "providerClientLibraries": [
+      "claude-hs"
+    ],
+    "mercuryPackages": 0,
+    "tests": {
+      "baikai-claude-test": 475
+    }
   }
 }

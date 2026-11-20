@@ -17,3 +17,6 @@ host policy, cache and schema shaping, the selected wire version, error
 classification and the whole-call timeout. Baikai translates the typed
 client events into its stable provider contract. Its public complete and
 stream paths use the same terminal evidence and cancellation behavior.
+
+Baikai resolves the wire client through its ordinary Hackage configuration.
+Disposable qualification checkouts can substitute a local candidate package.

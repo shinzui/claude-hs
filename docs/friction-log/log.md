@@ -5,9 +5,6 @@
 * **Update**: FRIC-1 resolved: Upgraded claude-hs to 0.40.1 and removed the local exclusion. Treefmt changed zero files and the Seihou update preview was a no-op.
 
 
-* **Addition**: FRIC-3 records blocked environment friction with https://hackage.haskell.org/: Baikai's Hackage dependency source cannot resolve claude-hs
-
-
 * **Update**: FRIC-2 accepted: The complete Shikigami suite passes with serial fixture scheduling.
 
 

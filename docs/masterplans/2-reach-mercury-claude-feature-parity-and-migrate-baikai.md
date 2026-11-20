@@ -50,7 +50,7 @@ Compare against the released Hackage sources for `Claude.V1`, `Claude.V1.Error`,
 |---|---|---|---|---|---|
 | EP-6 | Complete Claude Messages request and tool feature coverage | [6-complete-claude-messages-request-and-tool-feature-coverage.md](../plans/6-complete-claude-messages-request-and-tool-feature-coverage.md) | None | None | Complete |
 | EP-7 | Preserve advanced Claude response and streaming evidence | [7-preserve-advanced-claude-response-and-streaming-evidence.md](../plans/7-preserve-advanced-claude-response-and-streaming-evidence.md) | Two-turn fixture only: EP-6 continuation inputs milestone | None | Complete |
-| EP-8 | Remove the Mercury Claude dependency from Baikai | [8-remove-the-mercury-claude-dependency-from-baikai.md](../plans/8-remove-the-mercury-claude-dependency-from-baikai.md) | EP-6, EP-7 | None | In Progress |
+| EP-8 | Remove the Mercury Claude dependency from Baikai | [8-remove-the-mercury-claude-dependency-from-baikai.md](../plans/8-remove-the-mercury-claude-dependency-from-baikai.md) | EP-6, EP-7 | None | Complete |
 
 ## Dependency Graph
 
@@ -66,13 +66,11 @@ EP-8 owns the migration patch, downstream regressions and final adoption in Baik
 
 The request and response plans passed the locked-shell producer suite, representative Baikai comparisons and both two-turn continuation fixtures. The pinned Mercury-free cohort passed 475 Baikai, 301 Shikumi and 820 Shikigami tests. The [Cabal evidence](../../integration/consumers/resolved-mercury-parity.json) confirms that the provider selected `claude-hs` and the resolved closure contains zero Mercury packages.
 
-EP-8 remains open for a published package and the clean build of the Baikai adoption commit.
+The clean adoption gate passed using Hackage `claude-hs` 0.1.0.0. All three child plans are complete.
 
 ## Surprises & Discoveries
 
 The transport-only baseline retained Mercury in its mapper and stream assembler. The migrated adapter uses the new request encoder and stream decoder, and its five [wire snapshots](../../integration/consumers/baikai-wire-parity.json) match the baseline, including signed and redacted tool rounds.
-
-The clean Baikai adoption check requires a Hackage `claude-hs` release. The package is absent and the new source has no declared license, which Cabal treats as a publication error. The local-source trial remains reproducible independently of release availability. [FRIC-3](../friction-log/3-baikai-s-hackage-dependency-source-cannot-resolve-claude-hs.md)
 
 ## Decision Log
 
@@ -81,3 +79,11 @@ The clean Baikai adoption check requires a Hackage `claude-hs` release. The pack
 2026-11-20 review revision. Give EP-7 the continuation check because separate encoder and decoder fixtures can pass with incompatible history. Give EP-8 the final Baikai build because a trial patch alone cannot establish adoption.
 
 ## Outcomes & Retrospective
+
+The adoption commit is `f3cdaff4a0ae8af573ee55c05927200510941f2a` in
+`mori://shinzui/baikai/repos/baikai`. A fresh checkout passed the full provider
+suite with the released client and the ordinary dependency configuration.
+The [HTTP decision](../adr/0002-scope-credentials-and-response-lifetime-to-the-client.md)
+records ownership at the provider boundary. The
+[replay decision](../adr/0003-preserve-provider-content-for-assistant-replay.md)
+records how two-turn history and provider evidence survive the conversion.
