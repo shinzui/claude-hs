@@ -32,3 +32,16 @@ Refresh fixtures by comparing the dated endpoint documentation and migration gui
 | JSON migration | `MessageRequest` decodes supported serialized requests and preserves tagged input and tool objects. Use `VersionedBlock` and `VersionedTool` for provider extensions. |
 
 See [mid-conversation system messages](https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages), [tool search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool), [programmatic tool calling](https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling), and [fallback](https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback).
+
+## Response and continuation evidence
+
+| Capability | Representation and fixture |
+|---|---|
+| Stop evidence | `ModelContextWindowExceeded` and `Refusal` are distinct stop reasons. `StopDetails` retains optional category, explanation and recommended model with an open unknown variant. `unaryEvidence` and `advancedEvidence` exercise create and SSE, and batch success uses the same unary decoder. |
+| Billing evidence | `UsageEvidence` includes geography, service tier, speed, output token breakdown, server-tool counters and iterations. `applyUsageUpdate` applies cumulative deltas without clearing missing values. `advancedEvidence` checks an explicit zero and retains unknown server-tool fields and iteration metadata. |
+| Programmatic continuation | `continueMessage` reuses the response container and carries ordered server calls, tool search references, code execution results and the programmatic caller into the next request. `advancedContinuation` verifies the exact second POST on `2026-10-21`. |
+| Fallback continuation | Send the original model, tool configuration and `server-side-fallback-2026-07-01`. `fallbackContinuation` shows the marker stays in place. The helper retains text and paired server-tool work before a mid-stream fallback, and discards pre-handoff thinking and client calls. |
+| Opaque response evidence | `responseJSON`, `blockJSON` and `eventJSON` keep the received provider objects. The documented continuation helper omits unknown block tags. Use `assistantContinuation` or `VersionedBlock` with a provider contract that admits an extension. |
+| Error categories | `apiErrorCategory` maps provider error tags to an open enumeration. HTTP status, transport, stream and JSON decode failures keep their existing `ClientError` alternatives. |
+
+The documented tool-search replay includes its result and references. Documented code execution replay can include a completed tool result. The programmatic continuation fixture preserves both, alongside the pending call and container. [Tool search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool), [programmatic tool calling](https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling), [fallback](https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback).

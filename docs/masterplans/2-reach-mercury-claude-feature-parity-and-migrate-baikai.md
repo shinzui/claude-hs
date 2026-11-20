@@ -48,8 +48,8 @@ Compare against the released Hackage sources for `Claude.V1`, `Claude.V1.Error`,
 
 | # | Title | Path | Hard deps | Soft deps | Status |
 |---|---|---|---|---|---|
-| EP-6 | Complete Claude Messages request and tool feature coverage | [6-complete-claude-messages-request-and-tool-feature-coverage.md](../plans/6-complete-claude-messages-request-and-tool-feature-coverage.md) | None | None | In Progress |
-| EP-7 | Preserve advanced Claude response and streaming evidence | [7-preserve-advanced-claude-response-and-streaming-evidence.md](../plans/7-preserve-advanced-claude-response-and-streaming-evidence.md) | Two-turn fixture only: EP-6 continuation inputs milestone | None | Not Started |
+| EP-6 | Complete Claude Messages request and tool feature coverage | [6-complete-claude-messages-request-and-tool-feature-coverage.md](../plans/6-complete-claude-messages-request-and-tool-feature-coverage.md) | None | None | Complete |
+| EP-7 | Preserve advanced Claude response and streaming evidence | [7-preserve-advanced-claude-response-and-streaming-evidence.md](../plans/7-preserve-advanced-claude-response-and-streaming-evidence.md) | Two-turn fixture only: EP-6 continuation inputs milestone | None | Complete |
 | EP-8 | Remove the Mercury Claude dependency from Baikai | [8-remove-the-mercury-claude-dependency-from-baikai.md](../plans/8-remove-the-mercury-claude-dependency-from-baikai.md) | EP-6, EP-7 | None | Not Started |
 
 ## Dependency Graph
@@ -64,7 +64,7 @@ EP-8 owns the migration patch, downstream regressions and final adoption in Baik
 
 ## Progress
 
-The endpoint and transport baseline has already passed. On 2026-11-20 the transport-only patch applied cleanly to `mori://shinzui/baikai/repos/baikai` at `87481ea7ff867a37bf602b0dc1ac8caa9e2e2710` and all 475 provider tests passed in that checkout's locked shell. The resolved plan selected both local `claude-hs` and Hackage `claude` 1.5.0. Request and response parity, the two-turn continuation fixture, the Mercury-free cohort trial and the clean Baikai adoption build remain open.
+The endpoint and transport baseline has already passed. On 2026-11-20 the transport-only patch applied cleanly to `mori://shinzui/baikai/repos/baikai` at `87481ea7ff867a37bf602b0dc1ac8caa9e2e2710` and all 475 provider tests passed in that checkout's locked shell. The resolved plan selected both local `claude-hs` and Hackage `claude` 1.5.0. Request and response parity passed the locked-shell producer suite and the [pinned Baikai projections](../../integration/consumers/baikai-parity-projections.patch). The two-turn Messages fixtures captured PTC and fallback history through the public encoder. The Mercury-free cohort trial and clean Baikai adoption build remain open.
 
 ## Surprises & Discoveries
 

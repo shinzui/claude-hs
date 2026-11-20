@@ -31,6 +31,7 @@ run = do
   gatedRelease
   fragmentedEvents
   streamToolContinuation
+  advancedEvidence
   streamFailures
   legacyBridge
   putStrLn "Streaming: delivery, cancellation, framing, continuation and failure fixtures passed"
@@ -193,7 +194,7 @@ fragmentedEvents = do
       ContentBlockDelta 1 (UnknownDelta "future_delta" _),
       ContentBlockStop 1,
       UnknownEvent "future_event",
-      MessageDelta (MessageUpdate (Just EndTurn) Nothing) (UsageUpdate (Just 20) (Just 9) Nothing (Just 5) Nothing),
+      MessageDelta (MessageUpdate (Just EndTurn) Nothing Nothing Nothing) (UsageUpdate (Just 20) (Just 9) Nothing (Just 5) Nothing Nothing (UsageEvidence Nothing Nothing Nothing Nothing Nothing Nothing)),
       MessageStop
       ] -> pure ()
     _ -> fail "unexpected event or delta sequence"
@@ -316,3 +317,53 @@ legacyBridge = do
   withClientConfig config app $ \client -> do
     Response _ terminal <- streamMessageValue client defaultRequestOptions request (\_ _ -> pure Continue) >>= expectRight
     assertEqual "legacy stream completed" Finished terminal
+
+advancedEvidence :: IO ()
+advancedEvidence = do
+  request <- sampleRequest baseConversation
+  let refusal = event "refusal" ["category" .= ("other" :: Text), "explanation" .= ("declined" :: Text)]
+      initialUsage =
+        object
+          [ "input_tokens" .= (17 :: Int),
+            "output_tokens" .= (1 :: Int),
+            "speed" .= ("fast" :: Text),
+            "service_tier" .= ("priority" :: Text),
+            "inference_geo" .= ("us" :: Text),
+            "cache_creation_input_tokens" .= (4 :: Int),
+            "cache_read_input_tokens" .= (5 :: Int),
+            "server_tool_use" .= object ["web_search_requests" .= (3 :: Int), "tool_search_requests" .= (2 :: Int), "extension" .= True]
+          ]
+      iteration = event "fallback_message" ["model" .= ("served-model" :: Text), "output_tokens" .= (19 :: Int), "extension" .= True]
+      patch = object ["output_tokens" .= (19 :: Int), "cache_read_input_tokens" .= (0 :: Int), "output_tokens_details" .= object ["thinking_tokens" .= (12 :: Int)], "iterations" .= [iteration], "server_tool_use" .= object ["tool_search_requests" .= (0 :: Int)]]
+      start = event "message_start" ["message" .= replace "usage" initialUsage (messageFixture [])]
+      delta reason details counters = event "message_delta" ["delta" .= object ["stop_reason" .= (reason :: Text), "stop_details" .= details], "usage" .= counters]
+      exhausted = delta "model_context_window_exceeded" Null patch
+      refused = delta "refusal" refusal (object ["unrecognised" .= True])
+      failedCode = event "code_execution_tool_result" ["tool_use_id" .= ("srvtoolu_1" :: Text), "content" .= event "code_execution_tool_result_error" ["error_code" .= ("invalid_tool_input" :: Text)]]
+      app _ send = send (sse (foldMap frame [start, blockStart 0 failedCode, blockStop 0, exhausted, refused, messageStop]))
+  withClient app $ \client -> do
+    seen <- newIORef []
+    _ <- streamMessage client defaultRequestOptions request (\_ entry -> modifyIORef' seen (entry :) >> pure Continue) >>= expectRight
+    reverse <$> readIORef seen >>= \case
+      [ StreamEvent (MessageStart first) _,
+        StreamEvent (ContentBlockStart 0 block) _,
+        StreamEvent (ContentBlockStop 0) _,
+        StreamEvent (MessageDelta context update) _,
+        StreamEvent (MessageDelta final missing) raw,
+        StreamEvent MessageStop _
+        ] -> do
+          assertEqual "typed code error" (OutputCodeExecutionResult "srvtoolu_1" (CodeExecutionFailed "invalid_tool_input")) (blockContent block)
+          assertEqual "context length distinct from refusal" (Just ModelContextWindowExceeded) (context ^. #stopReason)
+          assertEqual "refusal category, explanation and reason" (Just Refusal, Just (RefusalDetails (Just "other") (Just "declined") Nothing)) (final ^. #stopReason, final ^. #stopDetails)
+          assertEqual "raw delta" refused raw
+          let totals = applyUsageUpdate (applyUsageUpdate (first ^. #usage) update) missing
+              evidence = totals ^. #usageEvidence
+          assertEqual "cumulative usage and explicit zero" (17, 19, Just 4, Just 0) (totals ^. #inputTokens, totals ^. #outputTokens, totals ^. #cacheCreationInputTokens, totals ^. #cacheReadInputTokens)
+          assertEqual "pricing observations" (Just Fast, Just "priority", Just "us", Just (OutputTokenDetails (Just 12))) (evidence ^. #observedSpeed, evidence ^. #serviceTier, evidence ^. #inferenceGeography, evidence ^. #outputTokensDetails)
+          assertEqual "incremental server tool counts" (Just (ServerToolCounts (Just 3) Nothing (Just 0) Nothing)) (evidence ^. #serverToolCounts)
+          assertEqual "retained tool usage extensions" (Just (Bool True)) (totals ^. #serverToolUse >>= KeyMap.lookup "extension")
+          assertEqual "final fallback iterations" (Just [("fallback_message", Just "served-model", Just (Bool True))]) ((map (\i -> (iterationType i, iterationModel i, KeyMap.lookup "extension" (iterationJSON i)))) <$> (evidence ^. #iterations))
+      _ -> fail "expected advanced evidence transcript"
+  where
+    replace name value (Object fields) = Object (KeyMap.insert name value fields)
+    replace _ _ other = other

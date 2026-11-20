@@ -35,6 +35,7 @@ library
     Claude.Internal.Http
     Claude.Internal.Request
     Claude.Internal.Sse
+    Claude.Messages.Usage
 
   build-depends:
     aeson >=2.2 && <2.4,

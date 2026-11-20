@@ -1,0 +1,149 @@
+--- a/baikai-claude/baikai-claude.cabal
++++ b/baikai-claude/baikai-claude.cabal
+@@ -133,6 +133,7 @@
+     bytestring,
+     case-insensitive,
+     claude,
++    claude-hs,
+     containers,
+     directory,
+     filepath,
+diff --git a/baikai-claude/test/ShapeSpec.hs b/baikai-claude/test/ShapeSpec.hs
+index 31c5ef3..360870e 100644
+--- a/baikai-claude/test/ShapeSpec.hs
++++ b/baikai-claude/test/ShapeSpec.hs
+@@ -1,3 +1,4 @@
++{-# LANGUAGE LambdaCase #-}
+ module ShapeSpec (tests) where
+ 
+ import Baikai
+@@ -5,15 +6,23 @@ import Baikai.Models.Generated qualified as Models
+ import Baikai.Provider.Claude.Internal.Request (describeThinkingFor, mapRequest)
+ import Baikai.Provider.Claude.Shape (injectSystemCacheControl, streamRequestBody)
+ import Baikai.Provider.Claude.Transport qualified as Transport
++import Claude.Client qualified as Candidate
++import Claude.Messages qualified as Candidate
++import Claude.Streaming qualified as Candidate
+ import Control.Lens ((&), (.~), (^.))
+ import Control.Monad (forM_)
+ import Data.Aeson (Value (..), (.=))
+ import Data.Aeson qualified as Aeson
+ import Data.Aeson.Key qualified as AesonKey
+ import Data.Aeson.KeyMap qualified as KeyMap
++import Data.IORef (modifyIORef', newIORef, readIORef)
++import Data.List.NonEmpty (NonEmpty (..))
+ import Data.Map.Strict qualified as Map
+ import Data.Text qualified as Text
+ import Data.Vector qualified as Vector
++import Network.HTTP.Types (status200)
++import Network.Wai qualified as Wai
++import Network.Wai.Handler.Warp (testWithApplication)
+ import Test.Tasty (TestTree, testGroup)
+ import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+ 
+@@ -24,6 +33,7 @@ tests =
+     [ testCase "server-side fallbacks stay absent from the request" $ do
+         value <- shapedBody Models.anthropic_claude_opus_5 emptyContext emptyOptions
+         lookupPath ["fallbacks"] value @?= Nothing,
++      typedMapperParity,
+       summaryDisplayTest,
+       fastSpeedTests,
+       verbatimToolSchemaTest,
+@@ -283,3 +293,43 @@ summaryDisplayTest = testCase "adaptive requests ask for summarized display; bud
+   body <- shapedBody budget emptyContext opts
+   lookupPath ["thinking"] body @?= Just (Aeson.object ["type" .= ("enabled" :: Text.Text), "budget_tokens" .= thinkingTokenBudget ThinkingLow])
+   describeThinkingFor budget opts ^. #displayText @?= Nothing
++
++typedMapperParity :: TestTree
++typedMapperParity = testCase "candidate mapper matches the Mercury request envelope" $ do
++  let legacy = Models.anthropic_claude_sonnet_4_6
++      current = Models.anthropic_claude_opus_5_5
++      schema = KeyMap.singleton "type" (String "object")
++      legacyOpts = emptyOptions & #maxTokens .~ Just 100
++      sampled = legacyOpts & #temperature .~ Just 0.2
++      schemaOpts = legacyOpts & #responseFormat .~ Just (JsonSchema (jsonSchemaFormat "thing" (Object schema)))
++      oneTurn = emptyContext & #messages .~ Vector.singleton (user "Hello")
++      options = Candidate.defaultRequestOptions
++      send client request = Candidate.streamMessage client options request (\_ _ -> pure Candidate.Continue)
++      expectError fragment = \case
++        Left (Candidate.InvalidRequest detail) -> assertBool "validation detail" (Text.isInfixOf fragment detail)
++        _ -> assertFailure "Expected candidate pre-dispatch validation"
++      decodeBytes body = either fail pure (Aeson.eitherDecode body)
++      compareCall model_ ctx opts convo controls version = do
++        expected <- shapedBody model_ ctx opts
++        limit <- maybe (fail "invalid fixture limit") pure (Candidate.maxTokens 100)
++        let request = Candidate.withRequestControls controls (Candidate.MessageRequest convo limit [])
++        captures <- newIORef []
++        let app req respond = do
++              body <- Wai.strictRequestBody req >>= decodeBytes
++              modifyIORef' captures (<> [body])
++              respond (Wai.responseLBS status200 [("content-type", "text/event-stream")] "data: {\"type\":\"message_stop\"}\n\n")
++        testWithApplication (pure app) $ \port -> do
++          let config = (Candidate.defaultClientConfig "key") {Candidate.endpoint = "http://127.0.0.1:" <> show port, Candidate.apiVersion = Just version}
++          client <- Candidate.newClient config >>= either (fail . show) pure
++          _ <- send client request >>= either (fail . show) pure
++          readIORef captures >>= (@?= [expected])
++          next <- Candidate.newClient config {Candidate.apiVersion = Just "2026-10-21"} >>= either (fail . show) pure
++          case version of
++            "2023-06-01" -> do
++              send next request >>= expectError (if null (Candidate.conversationHistory convo) then "nonempty" else "sampling")
++              readIORef captures >>= (@?= [expected])
++            _ -> pure ()
++      conversation model_ features = Candidate.Conversation (model_ ^. #modelId) (Candidate.Message Candidate.User (Candidate.InputText "Hello" :| []) :| []) Nothing features
++  compareCall legacy emptyContext legacyOpts (Candidate.EmptyConversation (legacy ^. #modelId) Nothing Candidate.defaultMessageFeatures) Candidate.defaultRequestControls "2023-06-01"
++  compareCall legacy oneTurn sampled (conversation legacy Candidate.defaultMessageFeatures) Candidate.defaultRequestControls {Candidate.temperature = Just 0.2} "2023-06-01"
++  compareCall current oneTurn schemaOpts (conversation current Candidate.defaultMessageFeatures {Candidate.outputConfig = Just (Candidate.OutputConfig Nothing (Just schema))}) Candidate.defaultRequestControls "2026-10-21"
+diff --git a/baikai-claude/test/SseSpec.hs b/baikai-claude/test/SseSpec.hs
+index 56ceba4..14c290a 100644
+--- a/baikai-claude/test/SseSpec.hs
++++ b/baikai-claude/test/SseSpec.hs
+@@ -1,3 +1,4 @@
++{-# LANGUAGE OverloadedRecordDot #-}
+ module SseSpec (tests) where
+ 
+ import Baikai
+@@ -11,6 +12,8 @@ import Baikai.Provider.Claude.Sse
+     sseFromResponse,
+   )
+ import Baikai.Usage qualified as Usage
++import Claude.Messages qualified as Candidate
++import Claude.Streaming qualified as Candidate
+ import Claude.V1.Messages qualified as Messages
+ import Contract (assertErrorContract)
+ import Control.Lens ((&), (.~), (^.))
+@@ -40,7 +43,8 @@ tests :: TestTree
+ tests =
+   testGroup
+     "Baikai.Provider.Claude.Sse"
+-    [ testCase "non-2xx response preserves Retry-After and status" $ do
++    [ candidateEvidenceParity,
++      testCase "non-2xx response preserves Retry-After and status" $ do
+         eventsRef <- newIORef []
+         metaRef <- newIORef []
+         resp <- mkResponse 429 [("Retry-After", "7")] ["{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"slow\"}}"]
+@@ -645,3 +649,25 @@ refusalWithDetails details =
+            ),
+          frameOf "{\"type\":\"message_stop\"}"
+        ]
++
++candidateEvidenceParity :: TestTree
++candidateEvidenceParity = testCase "candidate evidence matches Mercury refusal and usage" $ do
++  let decodeBoth bytes = do
++        raw <- either fail pure (Aeson.eitherDecodeStrict bytes)
++        mercury <- either fail pure (Aeson.eitherDecodeStrict bytes)
++        candidate <- either fail (either (const (fail "unexpected provider error")) pure) (Candidate.decodeStreamEvent raw)
++        pure (mercury, Candidate.eventPayload candidate)
++  (oldStart, newStart) <- decodeBoth "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-opus-5\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1,\"cache_read_input_tokens\":7,\"service_tier\":\"standard\",\"speed\":\"fast\"}}}"
++  (oldDelta, newDelta) <- decodeBoth "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\",\"stop_details\":{\"type\":\"refusal\",\"category\":\"other\",\"explanation\":\"declined\"}},\"usage\":{\"output_tokens\":8,\"cache_read_input_tokens\":0,\"output_tokens_details\":{\"thinking_tokens\":3}}}"
++  case (oldStart, newStart, oldDelta, newDelta) of
++    (Messages.Message_Start original, Candidate.MessageStart observed, Messages.Message_Delta oldStop oldUsage, Candidate.MessageDelta stop update) -> do
++      let initial = original ^. #usage
++          totals = Candidate.applyUsageUpdate (observed ^. #usage) update
++          evidence = totals ^. #usageEvidence
++          previous = oldStop ^. #stop_details
++      (totals ^. #inputTokens, totals ^. #outputTokens, totals ^. #cacheReadInputTokens) @?= (initial ^. #input_tokens, oldUsage.output_tokens, oldUsage.stream_cache_read_input_tokens)
++      (evidence ^. #serviceTier, fmap Aeson.toJSON (evidence ^. #observedSpeed), evidence ^. #outputTokensDetails >>= Candidate.thinkingTokens) @?=
++        (initial ^. #service_tier, fmap Aeson.toJSON (initial ^. #speed), Messages.thinking_tokens <$> oldUsage.stream_output_tokens_details)
++      stop ^. #stopReason @?= Just Candidate.Refusal
++      stop ^. #stopDetails @?= Just (Candidate.RefusalDetails (previous >>= \d -> d.category) (previous >>= \d -> d.explanation) Nothing)
++    _ -> assertFailure "expected message start and final delta"

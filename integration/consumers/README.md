@@ -40,3 +40,22 @@ For the direct 2026-10-21 API use the client default and audit removed sampling 
 Fresh checkouts passed 475 Baikai tests and 301 Shikumi tests. Shikigami passed 820 tests with serial Tasty scheduling. The governed fixture recorded one attempt per wire dispatch on success, terminal HTTP failure and cancellation. Success retained the provider request ID and cached token counts. Terminal failure retained its request ID. Cancellation recorded an unknown terminal and closed the socket.
 
 Running the full Shikigami suite with multiple Tasty workers hit local HTTP fixture deadlines. The serial setting is recorded in [FRIC-2](../../docs/friction-log/2-concurrent-shikigami-fixture-deadlines-expire-during-the-consumer-trial.md).
+
+## Mercury parity projections
+
+In a disposable checkout of `mori://shinzui/baikai/repos/baikai` at
+`87481ea7ff867a37bf602b0dc1ac8caa9e2e2710`, apply
+[`baikai.patch`](baikai.patch) followed by
+[`baikai-parity-projections.patch`](baikai-parity-projections.patch).
+Add the candidate directory as a Cabal package in `cabal.project.local`.
+
+```bash
+nix develop --no-write-lock-file -c env -u ANTHROPIC_API_KEY -u ANTHROPIC_KEY \
+  cabal test baikai-claude:test:baikai-claude-test --test-show-details=direct \
+  --test-options='-p candidate --num-threads=1 +RTS -N4 -RTS' -j8
+```
+
+The request comparison covers empty legacy history, legacy sampling, native
+schema output and two current-version errors before dispatch. The stream
+comparison covers refusal details and cumulative usage alongside speed and
+service tier. Five selected cases passed, including the three transport fixtures.

@@ -22,6 +22,11 @@ provenance:
       at: 2026-11-20T22:03:12Z
       mode: "update"
       note: "Own the captured two-turn continuation fixture and its version-specific replay expectations."
+    - model: "gpt-6.2-sol"
+      harness: "codex-cli"
+      at: 2026-11-20T22:36:21Z
+      mode: "implement"
+      note: "Add typed response evidence and exercise public continuation."
 ---
 
 # Preserve advanced Claude response and streaming evidence
@@ -37,15 +42,19 @@ Applications can inspect structured refusal details, provider billing evidence a
 
 ## Progress
 
-- [ ] A Baikai-shaped fixture projects refusal details, context-window stop, reasoning token usage, service tier and speed from the candidate response and SSE observations.
-- [ ] A two-turn loopback fixture captures the request built from a decoded response, including admitted history and the returned container ID.
-- [ ] The complete, stream and batch fixtures decode all advanced response variants from the Mercury baseline and replay the supported opaque blocks.
+- [x] (2026-11-20) A Baikai-shaped fixture projects refusal details, context-window stop, reasoning token usage, service tier and speed from the candidate response and SSE observations.
+- [x] (2026-11-20) A two-turn loopback fixture captures the request built from a decoded response, including admitted history and the returned container ID.
+- [x] (2026-11-20) The complete, stream and batch fixtures decode all advanced response variants from the Mercury baseline and replay the supported opaque blocks.
 
 ## Surprises & Discoveries
 
 ## Decision Log
 
+2026-11-20. Keep the original response envelope and raw continuation access. The new `continueMessage` applies the documented fallback boundary and includes known tool search and execution results in their original positions. Callers can use `assistantContinuation` to replay opaque variants supported by their provider.
+
 ## Outcomes & Retrospective
+
+The locked-shell producer suite passed. `advancedContinuation` captures the returned container, PTC caller and unchanged tool history on the second POST. `fallbackContinuation` captures the fallback marker and its original order with the selected beta. `advancedEvidence`, `unaryEvidence` and incremental batch fixtures observe refusals and usage, including an explicit zero in the SSE delta. The [Baikai comparison patch](../../integration/consumers/baikai-parity-projections.patch) passed its Mercury versus candidate refusal, billing and cumulative usage projection.
 
 ## Context and Orientation
 

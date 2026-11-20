@@ -11,6 +11,8 @@ module Claude.Internal.Http
     Response (..),
     ResponseMetadata (..),
     ApiError (..),
+    ApiErrorCategory (..),
+    apiErrorCategory,
     ClientError (..),
     TransportFailure (..),
     BodyReader,
@@ -117,6 +119,30 @@ data ApiError = ApiError
 
 instance FromJSON ApiError where
   parseJSON = withObject "API error" $ \o -> ApiError <$> o .: "type" <*> o .: "message"
+
+data ApiErrorCategory
+  = InvalidRequestError
+  | AuthenticationError
+  | PermissionError
+  | NotFoundError
+  | RequestTooLargeError
+  | RateLimitError
+  | InternalApiError
+  | OverloadedError
+  | UnknownApiError !Text
+  deriving stock (Eq, Show)
+
+apiErrorCategory :: ApiError -> ApiErrorCategory
+apiErrorCategory (ApiError kind _) = case kind of
+  "invalid_request_error" -> InvalidRequestError
+  "authentication_error" -> AuthenticationError
+  "permission_error" -> PermissionError
+  "not_found_error" -> NotFoundError
+  "request_too_large" -> RequestTooLargeError
+  "rate_limit_error" -> RateLimitError
+  "api_error" -> InternalApiError
+  "overloaded_error" -> OverloadedError
+  other -> UnknownApiError other
 
 data TransportFailure = ConnectTimeout | ReadTimeout | ConnectionFailed | Disconnected | HttpFailure
   deriving stock (Eq, Show)

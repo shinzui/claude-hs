@@ -12,8 +12,15 @@ module Claude.Messages
     ImageSource (..),
     module Claude.Messages.Features,
     assistantContinuation,
+    continueMessage,
     responseText,
     MessageResponse (..),
+    ContainerInfo (..),
+    StopDetails (..),
+    UsageEvidence (..),
+    OutputTokenDetails (..),
+    ServerToolCounts (..),
+    UsageIteration (..),
     StopReason (..),
     Usage (..),
     TokenCount (..),
@@ -28,15 +35,18 @@ import Claude.Client (Client, ClientError, RequestOptions, Response)
 import Claude.Internal.Http (jsonRequest)
 import Claude.Internal.Request (validateMessages)
 import Claude.Messages.Features
+import Claude.Messages.Usage (OutputTokenDetails (..), ServerToolCounts (..), UsageEvidence (..), UsageIteration (..))
 import Control.Applicative ((<|>))
 import Control.Lens ((^.))
-import Data.Aeson (FromJSON (..), Key, Object, ToJSON (..), Value (Object), object, withObject, withText, (.!=), (.:), (.:?), (.=))
+import Data.Aeson (FromJSON (..), Key, Object, ToJSON (..), Value (..), object, withObject, withText, (.!=), (.:), (.:?), (.=))
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (Pair, Parser)
 import Data.Generics.Labels ()
 import Data.List.NonEmpty (NonEmpty)
 import Data.List.NonEmpty qualified as NonEmpty
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Time (UTCTime)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 
@@ -72,6 +82,7 @@ data InputBlock
   | InputToolUse !Text !Text !Value !(Maybe ToolCaller)
   | ToolAddition !ToolChangeReference !(Maybe CacheControl)
   | ToolRemoval !ToolChangeReference !(Maybe CacheControl)
+  | InputFallback !FallbackMarker
   | ReplayBlock !OutputBlock
   | VersionedBlock !Object
   deriving stock (Eq, Show)
@@ -88,6 +99,7 @@ instance ToJSON InputBlock where
       object (["type" .= ("tool_use" :: Text), "id" .= ident, "name" .= name_, "input" .= input] <> optional "caller" caller)
     ToolAddition tool cache -> toolChange "tool_addition" tool cache
     ToolRemoval tool cache -> toolChange "tool_removal" tool cache
+    InputFallback marker -> toJSON marker
     ReplayBlock block -> blockJSON block
     VersionedBlock block -> toJSON block
     where
@@ -253,7 +265,7 @@ instance FromJSON MessageRequest where
     let request = MessageRequest convo limit stops
     pure (if controls == defaultRequestControls then request else withRequestControls controls request)
 
-data StopReason = EndTurn | MaxTokensReached | StopSequence | ToolUse | PauseTurn | Refusal | UnknownStopReason !Text
+data StopReason = EndTurn | MaxTokensReached | StopSequence | ToolUse | PauseTurn | Refusal | ModelContextWindowExceeded | UnknownStopReason !Text
   deriving stock (Eq, Show)
 
 instance FromJSON StopReason where
@@ -266,6 +278,7 @@ instance FromJSON StopReason where
         "tool_use" -> ToolUse
         "pause_turn" -> PauseTurn
         "refusal" -> Refusal
+        "model_context_window_exceeded" -> ModelContextWindowExceeded
         other -> UnknownStopReason other
 
 data Usage = Usage
@@ -274,7 +287,8 @@ data Usage = Usage
     cacheCreationInputTokens :: !(Maybe Natural),
     cacheReadInputTokens :: !(Maybe Natural),
     cacheCreation :: !(Maybe Object),
-    serverToolUse :: !(Maybe Object)
+    serverToolUse :: !(Maybe Object),
+    usageEvidence :: !UsageEvidence
   }
   deriving stock (Eq, Show, Generic)
 
@@ -287,6 +301,7 @@ instance FromJSON Usage where
       <*> o .:? "cache_read_input_tokens"
       <*> o .:? "cache_creation"
       <*> o .:? "server_tool_use"
+      <*> parseJSON (Object o)
 
 data MessageResponse = MessageResponse
   { id :: !Text,
@@ -295,7 +310,10 @@ data MessageResponse = MessageResponse
     content :: ![OutputBlock],
     stopReason :: !(Maybe StopReason),
     stopSequence :: !(Maybe Text),
-    usage :: !Usage
+    usage :: !Usage,
+    stopDetails :: !(Maybe StopDetails),
+    container :: !(Maybe ContainerInfo),
+    responseJSON :: !Object
   }
   deriving stock (Eq, Show, Generic)
 
@@ -309,6 +327,36 @@ instance FromJSON MessageResponse where
       <*> o .:? "stop_reason"
       <*> o .:? "stop_sequence"
       <*> o .: "usage"
+      <*> o .:? "stop_details"
+      <*> o .:? "container"
+      <*> pure o
+
+instance ToJSON MessageResponse where
+  toJSON = Object . responseJSON
+
+data StopDetails
+  = RefusalDetails
+      { category :: !(Maybe Text),
+        explanation :: !(Maybe Text),
+        recommendedModel :: !(Maybe Text)
+      }
+  | UnknownStopDetails !Text !Object
+  deriving stock (Eq, Show, Generic)
+
+instance FromJSON StopDetails where
+  parseJSON = withObject "stop details" $ \o ->
+    o .: "type" >>= \case
+      "refusal" -> RefusalDetails <$> o .:? "category" <*> o .:? "explanation" <*> o .:? "recommended_model"
+      tag -> pure (UnknownStopDetails tag o)
+
+data ContainerInfo = ContainerInfo
+  { containerIdentifier :: !Text,
+    expiresAt :: !UTCTime
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance FromJSON ContainerInfo where
+  parseJSON = withObject "container" $ \o -> ContainerInfo <$> o .: "id" <*> o .: "expires_at"
 
 -- | Replay this history only against its originating provider and model.
 assistantContinuation :: MessageResponse -> Maybe Message
@@ -316,6 +364,49 @@ assistantContinuation response = do
   if response ^. #role == Assistant then pure () else Nothing
   blocks <- NonEmpty.nonEmpty (response ^. #content)
   pure (Message Assistant (fmap ReplayBlock blocks))
+
+-- | Append provider history and a user turn to the original request, reusing
+-- the returned container. Use only with the original provider and model
+-- configuration, including the original tools and fallback settings.
+continueMessage :: MessageRequest -> MessageResponse -> NonEmpty InputBlock -> Maybe MessageRequest
+continueMessage request response next = do
+  let original = request ^. #conversation
+      controls = case request of
+        MessageRequestWithControls _ _ _ configured -> configured
+        MessageRequest {} -> defaultRequestControls
+      retained = replayableHistory (response ^. #content)
+  assistant <- assistantContinuation (response {content = retained})
+  let history = conversationHistory original <> [assistant, Message User next]
+      updated = request {conversation = withConversationHistory history original}
+  pure $ case response ^. #container of
+    Nothing -> updated
+    Just info -> withRequestControls (controls {containerId = Just (containerIdentifier info)}) updated
+
+-- Before the last handoff the service accepts text and completed server calls.
+-- The marker itself must remain in place relative to both models' output.
+replayableHistory :: [OutputBlock] -> [OutputBlock]
+replayableHistory blocks =
+  case break isFallback (reverse blocks) of
+    (_, []) -> filter supported blocks
+    (after, marker : before) -> filter beforeFallback (reverse before) <> [marker] <> filter supported (reverse after)
+  where
+    isFallback block = case blockContent block of
+      OutputFallback _ -> True
+      _ -> False
+    supported block = case blockContent block of
+      UnknownBlock _ -> False
+      _ -> True
+    beforeFallback block = case blockContent block of
+      OutputText {} -> True
+      OutputFallback _ -> True
+      ServerToolUse ident _ _ -> any ((== Just (String ident)) . wireToolId) blocks
+      WebSearchToolResult {} -> True
+      OutputCodeExecutionResult {} -> True
+      OutputToolSearchResult {} -> True
+      _ -> False
+    wireToolId block = case blockJSON block of
+      Object fields -> KeyMap.lookup "tool_use_id" fields
+      _ -> Nothing
 
 responseText :: MessageResponse -> Text
 responseText response =

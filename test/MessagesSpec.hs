@@ -1,14 +1,16 @@
-module MessagesSpec (run, baseConversation, messageFixture, sampleRequest) where
+module MessagesSpec (run, baseConversation, messageFixture, messageWithEvidence, sampleRequest) where
 
 import Claude.Batches (BatchItem (..), createBatch, mkCustomId)
 import Claude.Client
 import Claude.Messages
 import Claude.Streaming qualified as Claude
-import Control.Monad (void)
-import Data.Aeson (Value, eitherDecode, encode, object, toJSON, (.=))
+import Control.Lens ((^.))
+import Control.Monad (void, when)
+import Data.Aeson (Key, Value (..), eitherDecode, encode, object, toJSON, (.=))
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (Pair)
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.Generics.Labels ()
+import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map.Strict qualified as Map
@@ -44,6 +46,9 @@ run = do
   failureCases
   requestControlsRoundtrip
   advancedRequestRoundtrip
+  advancedContinuation
+  fallbackContinuation
+  unaryEvidence
   putStrLn "Messages: text, session headers, token count and failure fixtures passed"
 
 textRoundtrip :: IO ()
@@ -76,8 +81,8 @@ textRoundtrip = do
   withClient app $ \client -> do
     Response meta response <- createMessage client options request >>= expectRight
     assertEqual "request ID" (Just "req_1") (requestId meta)
-    let MessageResponse messageId modelId sender blocks reason matchedStop counters = response
-    assertEqual "typed message metadata" ("msg_1", "candidate-model", Assistant, Just EndTurn, Nothing, Usage 17 8 Nothing Nothing Nothing Nothing) (messageId, modelId, sender, reason, matchedStop, counters)
+    let MessageResponse messageId modelId sender blocks reason matchedStop counters _ _ _ = response
+    assertEqual "typed message metadata" ("msg_1", "candidate-model", Assistant, Just EndTurn, Nothing, Usage 17 8 Nothing Nothing Nothing Nothing (UsageEvidence Nothing Nothing Nothing Nothing Nothing Nothing)) (messageId, modelId, sender, reason, matchedStop, counters)
     assertEqual "typed blocks" [OutputText "Hi" Nothing, UnknownBlock "future"] (map blockContent blocks)
     assertEqual "unknown block payload" [future] (drop 1 (map blockJSON blocks))
     createMessage client (options {extraHeaders = [("HOST", "wrong-host")]}) request >>= \case
@@ -265,3 +270,139 @@ tagged tag fields = object (("type" .= tag) : fields)
 
 userHello :: Value
 userHello = turn "user" [tagged "text" ["text" .= ("Hello" :: Text)]]
+
+advancedContinuation :: IO ()
+advancedContinuation = do
+  let schema = KeyMap.singleton "type" (String "object")
+      features_ =
+        defaultMessageFeatures
+          { tools =
+              [ ToolSearchTool BM25Search20251119 Nothing,
+                CodeExecutionTool CodeExecution20260120 Nothing,
+                ConfiguredTool (ClientTool "lookup" Nothing schema Nothing Nothing) (ToolLoading (Just True) (Just [AllowDirect, AllowCodeExecution CodeExecution20260120]))
+              ]
+          }
+      serverCall ident name_ = tagged "server_tool_use" ["id" .= (ident :: Text), "name" .= (name_ :: Text), "input" .= object []]
+      search =
+        tagged
+          "tool_search_tool_result"
+          ["tool_use_id" .= ("srvtoolu_search" :: Text), "content" .= tagged "tool_search_tool_search_result" ["tool_references" .= [tagged "tool_reference" ["tool_name" .= ("lookup" :: Text)]]]]
+      code =
+        tagged
+          "code_execution_tool_result"
+          ["tool_use_id" .= ("srvtoolu_done" :: Text), "content" .= tagged "code_execution_result" ["stdout" .= ("done" :: Text), "stderr" .= ("" :: Text), "return_code" .= (0 :: Int), "content" .= ([] :: [Value])]]
+      tool =
+        tagged
+          "tool_use"
+          [ "id" .= ("toolu_1" :: Text),
+            "name" .= ("lookup" :: Text),
+            "input" .= object [],
+            "caller" .= tagged "code_execution_20260120" ["tool_id" .= ("srvtoolu_pending" :: Text), "future_caller_field" .= True],
+            "future_tool_field" .= (1 :: Int)
+          ]
+      unknown = tagged "future_only" ["passed_through" .= True]
+      knownBlocks = [serverCall "srvtoolu_search" "tool_search_tool_bm25", search, serverCall "srvtoolu_done" "code_execution", code, serverCall "srvtoolu_pending" "code_execution", tool]
+      blocks = knownBlocks <> [unknown]
+      toolResult = InputToolResult (ToolResult "toolu_1" (ToolResultText "result") Nothing Nothing)
+      resultJson = tagged "tool_result" ["tool_use_id" .= ("toolu_1" :: Text), "content" .= ("result" :: Text)]
+      container_ = object ["id" .= ("container_1" :: Text), "expires_at" .= ("2026-11-20T23:30:00Z" :: Text)]
+      fixture = addField "container" container_ $ addField "stop_reason" "tool_use" $ messageFixture blocks
+      conversation_ = Conversation "claude-opus-5-5" (Message User (InputText "Hello" :| []) :| []) Nothing features_
+      opts = defaultRequestOptions
+  request <- sampleRequest conversation_
+  twoTurns opts request fixture (toolResult :| []) $ \initial result outgoing -> do
+    assertEqual "exact opaque provider observations" fixture (toJSON result)
+    case map blockContent (result ^. #content) of
+      [ServerToolUse {}, OutputToolSearchResult _ (ToolSearchMatches ["lookup"]), ServerToolUse {}, OutputCodeExecutionResult _ (CodeExecutionCompleted "done" "" 0 []), ServerToolUse {}, OutputToolUseWithCaller "toolu_1" "lookup" _ (CodeExecutionCaller CodeExecution20260120 "srvtoolu_pending"), UnknownBlock "future_only"] -> pure ()
+      _ -> fail "missing typed continuation evidence"
+    assertEqual
+      "second request history and container"
+      (addField "container" "container_1" (addField "messages" (toJSON [userHello, turn "assistant" knownBlocks, turn "user" [resultJson]]) initial))
+      outgoing
+
+fallbackContinuation :: IO ()
+fallbackContinuation = do
+  let textBlock body = tagged "text" ["text" .= (body :: Text)]
+      marker =
+        tagged
+          "fallback"
+          [ "from" .= object ["model" .= ("claude-fable-5" :: Text)],
+            "to" .= object ["model" .= ("claude-opus-4-8" :: Text)],
+            "trigger" .= tagged "refusal" ["category" .= ("other" :: Text)]
+          ]
+      suffix = textBlock "Fallback text"
+      fixture = addField "model" "claude-opus-4-8" (messageFixture [marker, suffix])
+      opts = defaultRequestOptions {betaFeatures = ["server-side-fallback-2026-07-01"]}
+      conversation_ = Conversation "claude-fable-5" (Message User (InputText "Hello" :| []) :| []) Nothing defaultMessageFeatures
+  request <- withRequestControls defaultRequestControls {fallbacks = Just DefaultFallbacks} <$> sampleRequest conversation_
+  let explicit = Message Assistant (InputFallback (FallbackMarker "claude-fable-5" "claude-opus-4-8" "refusal" (Just "other")) :| [InputText "Fallback text"])
+  assertEqual "typed fallback history" (turn "assistant" [marker, suffix]) (toJSON explicit)
+  twoTurns opts request fixture (InputText "Continue" :| []) $ \initial result outgoing -> do
+    case map blockContent (result ^. #content) of
+      [OutputFallback (FallbackMarker "claude-fable-5" "claude-opus-4-8" "refusal" (Just "other")), OutputText {}] -> pure ()
+      _ -> fail "missing fallback identity"
+    assertEqual
+      "fallback keeps model, settings and marker order"
+      (addField "messages" (toJSON [userHello, turn "assistant" [marker, suffix], turn "user" [textBlock "Continue"]]) initial)
+      outgoing
+
+twoTurns ::
+  RequestOptions ->
+  MessageRequest ->
+  Value ->
+  NonEmpty InputBlock ->
+  (Value -> MessageResponse -> Value -> IO ()) ->
+  IO ()
+twoTurns options request fixture followUp check = do
+  requests <- newIORef []
+  let app req send = do
+        assertEqual "continuation version" (Just "2026-10-21") (lookup "anthropic-version" (Wai.requestHeaders req))
+        when (not (null (betaFeatures options))) $
+          assertEqual "fallback beta" (Just "server-side-fallback-2026-07-01") (lookup "anthropic-beta" (Wai.requestHeaders req))
+        body <- requestJson req
+        subsequent <- atomicModifyIORef' requests (\prior -> (prior <> [body], not (null prior)))
+        send (json status200 [] (if subsequent then messageFixture [] else fixture))
+  withClient app $ \client -> do
+    Response _ decoded <- createMessage client options request >>= expectRight
+    next <- maybe (fail "missing continuation") pure (continueMessage request decoded followUp)
+    _ <- createMessage client options next >>= expectRight
+    readIORef requests >>= \case
+      [initial, outgoing] -> check initial decoded outgoing
+      _ -> fail "expected exactly two requests"
+
+addField :: Key -> Value -> Value -> Value
+addField key value (Object fields) = Object (KeyMap.insert key value fields)
+addField _ _ value = value
+
+messageWithEvidence :: Value
+messageWithEvidence =
+  addField "stop_reason" "refusal" $
+    addField "stop_details" (tagged "refusal" ["category" .= ("other" :: Text), "explanation" .= ("declined" :: Text)]) $
+      addField
+        "usage"
+        ( object
+            [ "input_tokens" .= (17 :: Int),
+              "output_tokens" .= (8 :: Int),
+              "service_tier" .= ("priority" :: Text),
+              "speed" .= ("fast" :: Text),
+              "output_tokens_details" .= object ["thinking_tokens" .= (5 :: Int)]
+            ]
+        )
+        (messageFixture [])
+
+unaryEvidence :: IO ()
+unaryEvidence = do
+  request <- sampleRequest baseConversation
+  let app req send =
+        let result = case lookup "x-case" (Wai.requestHeaders req) of
+              Just "malformed" -> addField "stop_details" (tagged "refusal" ["explanation" .= True]) messageWithEvidence
+              _ -> messageWithEvidence
+         in send (json status200 [] result)
+  withClient app $ \client -> do
+    Response _ result <- createMessage client defaultRequestOptions request >>= expectRight
+    assertEqual "unary stop details" (Just (RefusalDetails (Just "other") (Just "declined") Nothing)) (result ^. #stopDetails)
+    assertEqual "unary reasoning" (Just (OutputTokenDetails (Just 5))) (result ^. #usage . #usageEvidence . #outputTokensDetails)
+    assertEqual "provider JSON" messageWithEvidence (toJSON result)
+    createMessage client defaultRequestOptions {extraHeaders = [("x-case", "malformed")]} request >>= \case
+      Left (DecodeError _ _) -> pure ()
+      _ -> fail "expected malformed stop details to fail decoding"

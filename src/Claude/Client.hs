@@ -12,6 +12,8 @@ module Claude.Client
     Response (..),
     ResponseMetadata (..),
     ApiError (..),
+    ApiErrorCategory (..),
+    apiErrorCategory,
     ClientError (..),
     TransportFailure (..),
   )

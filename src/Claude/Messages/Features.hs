@@ -36,6 +36,9 @@ module Claude.Messages.Features
     WebSearchResult (..),
     OutputBlock,
     BlockContent (..),
+    ToolSearchOutcome (..),
+    CodeExecutionOutcome (..),
+    FallbackMarker (..),
     blockContent,
     blockJSON,
   )
@@ -121,12 +124,13 @@ instance ToJSON FallbackModel where
         <> optional "speed" speed_
         <> optional "thinking" thinking_
 
-data Speed = Standard | Fast
+data Speed = Standard | Fast | VersionedSpeed !Text
   deriving stock (Eq, Show)
 
 instance ToJSON Speed where
   toJSON Standard = "standard"
   toJSON Fast = "fast"
+  toJSON (VersionedSpeed value) = toJSON value
 
 data Effort = Low | Medium | High | ExtraHigh | Maximum | VersionedEffort !Text
   deriving stock (Eq, Show)
@@ -438,8 +442,12 @@ data BlockContent
   | OutputThinking !Text !Text
   | RedactedThinking !Text
   | OutputToolUse !Text !Text !Value
+  | OutputToolUseWithCaller !Text !Text !Value !ToolCaller
   | ServerToolUse !Text !Text !Value
   | WebSearchToolResult !Text !WebSearchOutcome
+  | OutputToolSearchResult !Text !ToolSearchOutcome
+  | OutputCodeExecutionResult !Text !CodeExecutionOutcome
+  | OutputFallback !FallbackMarker
   | UnknownBlock !Text
   deriving stock (Eq, Show)
 
@@ -453,11 +461,85 @@ instance FromJSON OutputBlock where
           "text" -> OutputText <$> o .: "text" <*> o .:? "citations"
           "thinking" -> OutputThinking <$> o .: "thinking" <*> o .: "signature"
           "redacted_thinking" -> RedactedThinking <$> o .: "data"
-          "tool_use" -> tool OutputToolUse
+          "tool_use" -> do
+            caller <- o .:? "caller"
+            case caller of
+              Nothing -> tool OutputToolUse
+              Just origin -> tool (\ident name_ input -> OutputToolUseWithCaller ident name_ input origin)
           "server_tool_use" -> tool ServerToolUse
           "web_search_tool_result" -> WebSearchToolResult <$> o .: "tool_use_id" <*> o .: "content"
+          "tool_search_tool_result" -> OutputToolSearchResult <$> o .: "tool_use_id" <*> o .: "content"
+          "code_execution_tool_result" -> executionResult o
+          "bash_code_execution_tool_result" -> executionResult o
+          "text_editor_code_execution_tool_result" -> executionResult o
+          "fallback" -> OutputFallback <$> parseJSON raw
           other -> pure (UnknownBlock other)
         pure (OutputBlock observed raw)
+
+instance ToJSON OutputBlock where
+  toJSON = blockJSON
+
+instance FromJSON ToolCaller where
+  parseJSON = withObject "tool caller" $ \o ->
+    o .: "type" >>= \case
+      "direct" -> pure DirectCaller
+      "code_execution_20250825" -> CodeExecutionCaller CodeExecution20250825 <$> o .: "tool_id"
+      "code_execution_20260120" -> CodeExecutionCaller CodeExecution20260120 <$> o .: "tool_id"
+      tag -> pure (VersionedCaller tag o)
+
+data ToolSearchOutcome = ToolSearchMatches ![Text] | ToolSearchFailed !Text | UnknownToolSearchOutcome !Text !Object
+  deriving stock (Eq, Show)
+
+instance FromJSON ToolSearchOutcome where
+  parseJSON = withObject "tool search result" $ \o ->
+    let references = o .: "tool_references" >>= traverse (withObject "tool reference" (.: "tool_name"))
+        failed = ToolSearchFailed <$> o .: "error_code"
+     in o .: "type" >>= \case
+          "tool_search_result" -> ToolSearchMatches <$> references
+          "tool_search_tool_search_result" -> ToolSearchMatches <$> references
+          "error" -> failed
+          "tool_search_tool_result_error" -> failed
+          tag -> pure (UnknownToolSearchOutcome tag o)
+
+data CodeExecutionOutcome
+  = CodeExecutionCompleted !Text !Text !Int ![Value]
+  | CodeExecutionFailed !Text
+  | UnknownCodeExecutionOutcome !Text !Object
+  deriving stock (Eq, Show)
+
+instance FromJSON CodeExecutionOutcome where
+  parseJSON = withObject "code execution result" $ \o ->
+    let completed = CodeExecutionCompleted <$> o .: "stdout" <*> o .: "stderr" <*> o .: "return_code" <*> o .: "content"
+        failed = CodeExecutionFailed <$> o .: "error_code"
+     in o .: "type" >>= \case
+          "code_execution_result" -> completed
+          "bash_code_execution_result" -> completed
+          "code_execution_tool_result_error" -> failed
+          "bash_code_execution_tool_result_error" -> failed
+          "text_editor_code_execution_tool_result_error" -> failed
+          tag -> pure (UnknownCodeExecutionOutcome tag o)
+
+executionResult :: Object -> Parser BlockContent
+executionResult o = OutputCodeExecutionResult <$> o .: "tool_use_id" <*> o .: "content"
+
+data FallbackMarker = FallbackMarker
+  { fromModel :: !Text,
+    toModel :: !Text,
+    triggerType :: !Text,
+    category :: !(Maybe Text)
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance FromJSON FallbackMarker where
+  parseJSON = withObject "fallback marker" $ \o -> do
+    from <- o .: "from" >>= withObject "source model" (.: "model")
+    to <- o .: "to" >>= withObject "fallback model" (.: "model")
+    trigger <- o .: "trigger"
+    withObject "fallback trigger" (\t -> FallbackMarker from to <$> t .: "type" <*> t .:? "category") trigger
+
+instance ToJSON FallbackMarker where
+  toJSON (FallbackMarker from to trigger reason) =
+    tagged "fallback" ["from" .= object ["model" .= from], "to" .= object ["model" .= to], "trigger" .= tagged trigger (optional "category" reason)]
 
 tagged :: Text -> [Pair] -> Value
 tagged tag fields = object (("type" .= tag) : fields)
@@ -469,7 +551,7 @@ instance FromJSON Speed where
   parseJSON = withText "speed" $ \case
     "standard" -> pure Standard
     "fast" -> pure Fast
-    _ -> fail "unknown speed"
+    other -> pure (VersionedSpeed other)
 
 instance FromJSON Effort where
   parseJSON = withText "effort" $ \case

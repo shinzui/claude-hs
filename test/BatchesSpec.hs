@@ -2,11 +2,12 @@ module BatchesSpec (run) where
 
 import Claude.Batches
 import Claude.Client
-import Claude.Messages (responseText)
+import Claude.Messages (OutputTokenDetails (..), RequestControls (..), StopDetails (..), defaultRequestControls, responseText, withRequestControls)
 import Control.Concurrent (newEmptyMVar, putMVar, takeMVar)
 import Control.Lens ((^.))
 import Control.Monad (void)
 import Data.Aeson (Value (..), eitherDecode, encode, object, toJSON, (.=))
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Lazy qualified as LBS
 import Data.Generics.Labels ()
@@ -15,7 +16,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
 import Data.Time (UTCTime)
 import FeaturesSpec (enrichedConversation, enrichedOptions, thinkingBlock)
-import MessagesSpec (messageFixture, sampleRequest)
+import MessagesSpec (messageWithEvidence, sampleRequest)
 import Network.HTTP.Types (status200)
 import Network.Wai qualified as Wai
 import Support.Server
@@ -32,7 +33,7 @@ withBatchId action = maybe (fail "invalid fixture batch ID") action (batchId "ms
 lifecycle :: IO ()
 lifecycle = withBatchId $ \ident -> do
   requests <- newIORef []
-  request <- sampleRequest enrichedConversation
+  request <- withRequestControls defaultRequestControls {containerId = Just "container_batch", inferenceGeo = Just "us"} <$> sampleRequest enrichedConversation
   a <- maybe (fail "invalid alpha ID") pure (mkCustomId "alpha")
   b <- maybe (fail "invalid beta ID") pure (mkCustomId "beta")
   let running = batchFixture "in_progress" False
@@ -123,8 +124,7 @@ incrementalResults = withBatchId $ \ident -> do
           "alpha"
           "succeeded"
           [ "message"
-              .= messageFixture
-                [thinkingBlock "" "batch-signature", object ["type" .= ("text" :: Text), "text" .= ("café" :: Text)]]
+              .= withBlocks messageWithEvidence [thinkingBlock "" "batch-signature", object ["type" .= ("text" :: Text), "text" .= ("café" :: Text)]]
           ]
       exercise malformed = do
         gate <- newEmptyMVar
@@ -152,8 +152,14 @@ incrementalResults = withBatchId $ \ident -> do
   good <- exercise False
   assertEqual "results correlate by custom ID" ["delta", "gamma", "beta", "alpha"] (map (customIdText . (^. #customId)) good)
   case map (^. #outcome) good of
-    [BatchExpired, BatchCanceled, BatchErrored (ApiError "overloaded_error" "echo [redacted]"), BatchSucceeded result] ->
+    [BatchExpired, BatchCanceled, BatchErrored (ApiError "overloaded_error" "echo [redacted]"), BatchSucceeded result] -> do
       assertEqual "batch message uses shared response codec" "café" (responseText result)
+      assertEqual "batch stop details" (Just (RefusalDetails (Just "other") (Just "declined") Nothing)) (result ^. #stopDetails)
+      assertEqual "batch reasoning" (Just (OutputTokenDetails (Just 5))) (result ^. #usage . #usageEvidence . #outputTokensDetails)
     _ -> fail "Expected all four batch outcomes"
   partial <- exercise True
   assertEqual "first line delivered before later failure" ["delta"] (map (customIdText . (^. #customId)) partial)
+
+withBlocks :: Value -> [Value] -> Value
+withBlocks (Object fields) blocks = Object (KeyMap.insert "content" (toJSON blocks) fields)
+withBlocks other _ = other
