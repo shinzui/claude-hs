@@ -9,17 +9,17 @@ in  AgentPlans.AgentPlansCatalog::{
       [ AgentPlans.ExposedPlan::{
         , kind = AgentPlans.PlanKind.MasterPlan
         , file = "docs/masterplans/1-build-a-haskell-client-for-the-claude-messages-api.md"
-        , status = AgentPlans.PlanStatus.NotStarted
+        , status = AgentPlans.PlanStatus.Complete
         }
       , AgentPlans.ExposedPlan::{
         , kind = AgentPlans.PlanKind.ExecPlan
         , file = "docs/plans/1-send-messages-and-count-input-tokens.md"
-        , status = AgentPlans.PlanStatus.NotStarted
+        , status = AgentPlans.PlanStatus.Complete
         }
       , AgentPlans.ExposedPlan::{
         , kind = AgentPlans.PlanKind.ExecPlan
         , file = "docs/plans/2-stream-message-events-as-they-arrive.md"
-        , status = AgentPlans.PlanStatus.NotStarted
+        , status = AgentPlans.PlanStatus.Complete
         , dependencies =
           [ hard "mori://shinzui/claude-hs/plans/1-send-messages-and-count-input-tokens"
           , hard "mori://shinzui/claude-hs/plans/4-support-current-claude-reasoning-tools-caching-and-citations"
@@ -28,7 +28,7 @@ in  AgentPlans.AgentPlansCatalog::{
       , AgentPlans.ExposedPlan::{
         , kind = AgentPlans.PlanKind.ExecPlan
         , file = "docs/plans/3-submit-message-batches-and-consume-their-results.md"
-        , status = AgentPlans.PlanStatus.NotStarted
+        , status = AgentPlans.PlanStatus.Complete
         , dependencies =
           [ hard "mori://shinzui/claude-hs/plans/1-send-messages-and-count-input-tokens"
           ]
@@ -36,7 +36,7 @@ in  AgentPlans.AgentPlansCatalog::{
       , AgentPlans.ExposedPlan::{
         , kind = AgentPlans.PlanKind.ExecPlan
         , file = "docs/plans/4-support-current-claude-reasoning-tools-caching-and-citations.md"
-        , status = AgentPlans.PlanStatus.NotStarted
+        , status = AgentPlans.PlanStatus.Complete
         , dependencies =
           [ hard "mori://shinzui/claude-hs/plans/1-send-messages-and-count-input-tokens"
           ]
@@ -44,10 +44,34 @@ in  AgentPlans.AgentPlansCatalog::{
       , AgentPlans.ExposedPlan::{
         , kind = AgentPlans.PlanKind.ExecPlan
         , file = "docs/plans/5-verify-the-client-through-baikai-shikumi-and-shikigami.md"
-        , status = AgentPlans.PlanStatus.NotStarted
+        , status = AgentPlans.PlanStatus.Complete
         , dependencies =
           [ hard "mori://shinzui/claude-hs/plans/2-stream-message-events-as-they-arrive"
           , hard "mori://shinzui/claude-hs/plans/4-support-current-claude-reasoning-tools-caching-and-citations"
+          ]
+        }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.MasterPlan
+        , file = "docs/masterplans/2-reach-mercury-claude-feature-parity-and-migrate-baikai.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.ExecPlan
+        , file = "docs/plans/6-complete-claude-messages-request-and-tool-feature-coverage.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.ExecPlan
+        , file = "docs/plans/7-preserve-advanced-claude-response-and-streaming-evidence.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.ExecPlan
+        , file = "docs/plans/8-remove-the-mercury-claude-dependency-from-baikai.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        , dependencies =
+          [ hard "mori://shinzui/claude-hs/plans/6-complete-claude-messages-request-and-tool-feature-coverage"
+          , hard "mori://shinzui/claude-hs/plans/7-preserve-advanced-claude-response-and-streaming-evidence"
           ]
         }
       ]
