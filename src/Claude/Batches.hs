@@ -230,7 +230,7 @@ consumeBatchResults ::
   (BatchResult -> IO ()) ->
   IO (Either ClientError (Response ()))
 consumeBatchResults client options ident consume =
-  runRequest client "GET" (batchRoute ident <> "/results") [] options "application/x-jsonlines" Nothing $ \meta readBody -> do
+  runRequest client "GET" (batchRoute ident <> "/results") [] options "application/binary" Nothing $ \meta readBody -> do
     let deliver fragments = do
           result <- either throwE pure (decodeResponse meta (LBS.fromChunks (reverse fragments)))
           liftIO $ consume $ case result of

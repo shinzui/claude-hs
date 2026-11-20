@@ -1,6 +1,9 @@
 -- | Configuration and results shared by the Claude HTTP endpoints.
 module Claude.Client
   ( Client,
+    ClientPool,
+    newClientPool,
+    newClientWithPool,
     ClientConfig (..),
     defaultClientConfig,
     newClient,

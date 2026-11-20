@@ -13,3 +13,5 @@ Wire fixtures use synthetic values sampled from the direct API documentation on 
 Refresh fixtures by comparing the dated endpoint documentation and migration guide with the captured wire shape. Use synthetic model output, signatures, keys and encrypted citation indices. Compare semantic JSON and run the loopback suite from the locked shell.
 
 **Streaming migration.** `streamMessageValue` accepts a provider-shaped Messages object, validates its model, history and output limit, and owns the stream flag. With `apiVersion = Just "2026-10-21"` it reports removed sampling settings before dispatch. Compatibility callers with a supported old host or model may explicitly configure `Just "2023-06-01"` until they can migrate the setting. The direct client uses `2026-10-21` by default.
+
+**Batch results.** Read JSON Lines with the configured client origin and typed batch ID. The request uses the binary result media type. [Message Batch results](https://platform.claude.com/docs/en/api/messages/batches/results) and [Anthropic Python client](https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/resources/messages/batches.py)

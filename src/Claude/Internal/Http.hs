@@ -1,5 +1,8 @@
 module Claude.Internal.Http
   ( Client,
+    ClientPool,
+    newClientPool,
+    newClientWithPool,
     ClientConfig (..),
     defaultClientConfig,
     newClient,
@@ -38,6 +41,12 @@ import Network.HTTP.Types (HeaderName, Method, Query, RequestHeaders, hAccept, h
 
 data Client = Client !HTTP.Manager !HTTP.Request
 
+-- | A connection pool that can be shared by clients with different credentials.
+newtype ClientPool = ClientPool HTTP.Manager
+
+newClientPool :: IO ClientPool
+newClientPool = ClientPool <$> HTTP.newManager tlsManagerSettings {HTTP.managerRetryableException = const False}
+
 data ClientConfig = ClientConfig
   { apiKey :: !ByteString,
     endpoint :: !String,
@@ -50,7 +59,10 @@ defaultClientConfig :: ByteString -> ClientConfig
 defaultClientConfig key = ClientConfig key "https://api.anthropic.com" (Just 60000000) (Just "2026-10-21")
 
 newClient :: ClientConfig -> IO (Either ClientError Client)
-newClient config
+newClient config = newClientPool >>= flip newClientWithPool config
+
+newClientWithPool :: ClientPool -> ClientConfig -> IO (Either ClientError Client)
+newClientWithPool (ClientPool manager) config
   | BS.null (config ^. #apiKey) = pure (Left (InvalidRequest "An API key is required"))
   | maybe False (<= 0) (config ^. #timeoutMicros) = pure (Left (InvalidRequest "The response timeout must be positive"))
   | otherwise = do
@@ -60,8 +72,7 @@ newClient config
         Right base
           | not (BS.null (HTTP.queryString base)) || isJust (lookup "authorization" (HTTP.requestHeaders base)) ->
               pure (Left (InvalidRequest "The endpoint must use a host and optional path prefix"))
-          | otherwise -> do
-              manager <- HTTP.newManager tlsManagerSettings {HTTP.managerRetryableException = const False}
+          | otherwise ->
               pure . Right . Client manager $
                 base
                   { HTTP.redirectCount = 0,
@@ -87,7 +98,8 @@ data ResponseMetadata = ResponseMetadata
     retryAfter :: !(Maybe ByteString),
     status :: !Int,
     gatewayRequestId :: !(Maybe ByteString),
-    cloudflareRay :: !(Maybe ByteString)
+    cloudflareRay :: !(Maybe ByteString),
+    responseDate :: !(Maybe ByteString)
   }
   deriving stock (Eq, Generic)
 
@@ -112,7 +124,7 @@ data TransportFailure = ConnectTimeout | ReadTimeout | ConnectionFailed | Discon
 data ClientError
   = InvalidRequest !Text
   | TransportError !(Maybe ResponseMetadata) !TransportFailure
-  | ApiStatusError !ResponseMetadata !(Maybe ApiError)
+  | ApiStatusError !ResponseMetadata !(Maybe ApiError) !Text
   | DecodeError !ResponseMetadata !Text
   | StreamApiError !ResponseMetadata !ApiError
   deriving stock (Eq)
@@ -122,7 +134,7 @@ instance Show ClientError where
   show = \case
     InvalidRequest _ -> "InvalidRequest"
     TransportError _ kind -> "TransportError " <> show kind
-    ApiStatusError meta _ -> "ApiStatusError " <> show (meta ^. #status)
+    ApiStatusError meta _ _ -> "ApiStatusError " <> show (meta ^. #status)
     DecodeError meta _ -> "DecodeError (HTTP " <> show (meta ^. #status) <> ")"
     StreamApiError _ _ -> "StreamApiError"
 
@@ -152,13 +164,15 @@ runRequest client@(Client manager base) method route query options accept body c
                 (statusCode (HTTP.responseStatus response))
                 (lookup "x-request-id" headers)
                 (lookup "cf-ray" headers)
+                (lookup "date" headers)
             readBody = ExceptT $ either (Left . TransportError (Just meta) . classify) Right <$> try (HTTP.brRead (HTTP.responseBody response))
         if meta ^. #status >= 200 && meta ^. #status < 300
           then Response meta <$> consume meta readBody
           else do
             -- The status and request ID remain available if the peer cuts off the error body.
-            decoded <- ExceptT $ Right <$> runExceptT (collectBody readBody)
-            throwE (ApiStatusError meta (either (const Nothing) (apiErrorFromBody client) decoded))
+            decoded <- ExceptT $ Right <$> runExceptT (collectErrorBody readBody)
+            let bodyBytes = either (const LBS.empty) id decoded
+            throwE (ApiStatusError meta (apiErrorFromBody client bodyBytes) (redactText client (decodeUtf8Lenient (LBS.toStrict bodyBytes))))
   where
     request =
       base
@@ -209,11 +223,13 @@ clientApiVersion :: Client -> Maybe ByteString
 clientApiVersion (Client _ base) = lookup "anthropic-version" (HTTP.requestHeaders base)
 
 redactApiError :: Client -> ApiError -> ApiError
-redactApiError (Client _ base) (ApiError kind detail) =
-  ApiError (redact kind) (redact detail)
+redactApiError client (ApiError kind detail) = ApiError (redactText client kind) (redactText client detail)
+
+redactText :: Client -> Text -> Text
+redactText (Client _ base) text =
+  if Text.null key then text else Text.replace key "[redacted]" text
   where
     key = maybe "" decodeUtf8Lenient (lookup "x-api-key" (HTTP.requestHeaders base))
-    redact = if Text.null key then id else Text.replace key "[redacted]"
 
 apiErrorFromBody :: Client -> LBS.ByteString -> Maybe ApiError
 apiErrorFromBody client body = do
@@ -231,6 +247,17 @@ collectBody readBody = go []
     go chunks = do
       chunk <- readBody
       if BS.null chunk then pure (LBS.fromChunks (reverse chunks)) else go (chunk : chunks)
+
+collectErrorBody :: BodyReader -> ExceptT ClientError IO LBS.ByteString
+collectErrorBody readBody = go (65536 :: Int) []
+  where
+    go remaining chunks
+      | remaining == 0 = pure (LBS.fromChunks (reverse chunks))
+      | otherwise = do
+          chunk <- BS.take remaining <$> readBody
+          if BS.null chunk
+            then pure (LBS.fromChunks (reverse chunks))
+            else go (remaining - BS.length chunk) (chunk : chunks)
 
 decodeResponse :: (FromJSON a) => ResponseMetadata -> LBS.ByteString -> Either ClientError a
 decodeResponse meta = either (Left . DecodeError meta . Text.pack) Right . eitherDecode

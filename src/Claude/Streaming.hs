@@ -16,6 +16,7 @@ import Claude.Client
 import Claude.Internal.Http (clientApiVersion, decodeResponse, redactApiError, runRequest)
 import Claude.Internal.Sse (foldEvents)
 import Claude.Messages
+import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except (throwE)
 import Data.Aeson (FromJSON (..), Object, Value (..), toJSON, withObject, (.:), (.:?))
@@ -23,7 +24,6 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (Parser, parseEither)
 import Data.ByteString.Lazy qualified as LBS
-import Data.List.NonEmpty (NonEmpty)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding (encodeUtf8)
@@ -168,12 +168,15 @@ streamMessageValue client options body consume =
   where
     validate fields = do
       modelId <- fields .: "model"
-      _ <- fields .: "messages" :: Parser (NonEmpty Value)
+      history <- fields .: "messages" :: Parser [Value]
       limit <- fields .: "max_tokens"
-      if Text.null modelId || (limit :: Natural) == 0
-        then fail "Messages require a model ID and positive max_tokens"
-        else case removedSampling fields of
-          [] -> pure (KeyMap.insert "stream" (Bool True) fields)
-          removed -> fail ("2026-10-21 removed sampling fields: " <> show (map Key.toText removed))
+      when (Text.null modelId || (limit :: Natural) == 0) $
+        fail "Messages require a model ID and positive max_tokens"
+      when (currentVersion && null history) $
+        fail "Messages require a nonempty conversation"
+      case removedSampling fields of
+        [] -> pure (KeyMap.insert "stream" (Bool True) fields)
+        removed -> fail ("2026-10-21 removed sampling fields: " <> show (map Key.toText removed))
+    currentVersion = clientApiVersion client == Just "2026-10-21"
     removedSampling fields =
-      [key | clientApiVersion client == Just "2026-10-21", key <- ["temperature", "top_p", "top_k"], KeyMap.member key fields]
+      [key | currentVersion, key <- ["temperature", "top_p", "top_k"], KeyMap.member key fields]

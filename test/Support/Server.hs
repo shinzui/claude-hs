@@ -1,5 +1,6 @@
 module Support.Server
   ( withClient,
+    withClientConfig,
     json,
     requestJson,
     assertEqual,
@@ -17,8 +18,11 @@ import Network.Wai.Handler.Warp qualified as Warp
 import System.Timeout (timeout)
 
 withClient :: Wai.Application -> (Client -> IO a) -> IO a
-withClient app run = Warp.testWithApplication (pure app) $ \port -> do
-  client <- newClient (defaultClientConfig "loopback-secret") {endpoint = "http://127.0.0.1:" <> show port}
+withClient = withClientConfig (defaultClientConfig "loopback-secret")
+
+withClientConfig :: ClientConfig -> Wai.Application -> (Client -> IO a) -> IO a
+withClientConfig config app run = Warp.testWithApplication (pure app) $ \port -> do
+  client <- newClient config {endpoint = "http://127.0.0.1:" <> show port}
   expectRight client >>= within . run
 
 json :: Status -> ResponseHeaders -> Value -> Wai.Response

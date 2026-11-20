@@ -17,3 +17,5 @@ See [Messages coverage](docs/messages-coverage.md) for request options, model re
 Use `Claude.Streaming.streamMessage` for SSE. The callback receives typed events synchronously and returns `Continue` or `Stop`. Inspect the terminal result for provider completion or caller stop. Keep partial output in the callback if the caller needs it after a stream failure.
 
 Use `Claude.Batches` to submit, retrieve, list and cancel asynchronous batches. `consumeBatchResults` reads JSON Lines incrementally from the configured origin. Correlate outcomes with the original custom IDs.
+
+The [downstream trial](integration/consumers/README.md) contains the Baikai adapter patch, fixtures and pinned Cabal configuration for Baikai, Shikumi and Shikigami.

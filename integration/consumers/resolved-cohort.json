@@ -1,0 +1,179 @@
+{
+  "compiler": "ghc-9.12.4",
+  "tool": "3.16.1.0",
+  "components": [
+    {
+      "package": "baikai",
+      "version": "0.10.1.0",
+      "component": "lib",
+      "source": "local",
+      "id": "baikai-0.10.1.0-inplace",
+      "trialDependencies": []
+    },
+    {
+      "package": "baikai-claude",
+      "version": "0.7.3.0",
+      "component": "lib",
+      "source": "local",
+      "id": "baikai-claude-0.7.3.0-inplace",
+      "trialDependencies": [
+        "baikai-0.10.1.0-inplace",
+        "claude-hs-0.1.0.0-inplace"
+      ]
+    },
+    {
+      "package": "baikai-claude",
+      "version": "0.7.3.0",
+      "component": "test:baikai-claude-test",
+      "source": "local",
+      "id": "baikai-claude-0.7.3.0-inplace-baikai-claude-test",
+      "trialDependencies": [
+        "baikai-0.10.1.0-inplace",
+        "baikai-claude-0.7.3.0-inplace"
+      ]
+    },
+    {
+      "package": "baikai-openai",
+      "version": "0.7.3.0",
+      "component": "lib",
+      "source": "local",
+      "id": "baikai-openai-0.7.3.0-inplace",
+      "trialDependencies": [
+        "baikai-0.10.1.0-inplace"
+      ]
+    },
+    {
+      "package": "claude-hs",
+      "version": "0.1.0.0",
+      "component": "lib",
+      "source": "local",
+      "id": "claude-hs-0.1.0.0-inplace",
+      "trialDependencies": []
+    },
+    {
+      "package": "claude",
+      "version": "1.5.0",
+      "component": "lib",
+      "source": "repo-tar",
+      "id": "cld-1.5.0-14b3701b",
+      "trialDependencies": []
+    },
+    {
+      "package": "generic-lens",
+      "version": "2.3.0.0",
+      "component": "lib",
+      "source": "repo-tar",
+      "id": "gnrc-lns-2.3.0.0-3efcb3ac",
+      "trialDependencies": []
+    },
+    {
+      "package": "http-client",
+      "version": "0.7.19",
+      "component": "lib",
+      "source": "repo-tar",
+      "id": "http-clnt-0.7.19-175bf8cd",
+      "trialDependencies": []
+    },
+    {
+      "package": "http-client-tls",
+      "version": "0.4.0",
+      "component": "lib",
+      "source": "repo-tar",
+      "id": "http-clnt-tls-0.4.0-f9c10e8e",
+      "trialDependencies": []
+    },
+    {
+      "package": "http-types",
+      "version": "0.12.6",
+      "component": "lib",
+      "source": "repo-tar",
+      "id": "http-typs-0.12.6-b108a8a6",
+      "trialDependencies": []
+    },
+    {
+      "package": "lens",
+      "version": "5.3.6",
+      "component": "lib",
+      "source": "repo-tar",
+      "id": "lns-5.3.6-767713d4",
+      "trialDependencies": []
+    },
+    {
+      "package": "shikigami-core",
+      "version": "0.1.0.0",
+      "component": "lib:internal",
+      "source": "local",
+      "id": "shikigami-core-0.1.0.0-inplace-internal",
+      "trialDependencies": [
+        "baikai-0.10.1.0-inplace",
+        "baikai-claude-0.7.3.0-inplace",
+        "baikai-openai-0.7.3.0-inplace",
+        "shikumi-0.5.1.0-inplace"
+      ]
+    },
+    {
+      "package": "shikigami-core",
+      "version": "0.1.0.0",
+      "component": "test:shikigami-core-test",
+      "source": "local",
+      "id": "shikigami-core-0.1.0.0-inplace-shikigami-core-test",
+      "trialDependencies": [
+        "baikai-0.10.1.0-inplace",
+        "baikai-claude-0.7.3.0-inplace",
+        "baikai-openai-0.7.3.0-inplace",
+        "shikigami-core-0.1.0.0-inplace-internal",
+        "shikigami-core-0.1.0.0-inplace-local-host",
+        "shikumi-0.5.1.0-inplace"
+      ]
+    },
+    {
+      "package": "shikumi",
+      "version": "0.5.1.0",
+      "component": "lib",
+      "source": "local",
+      "id": "shikumi-0.5.1.0-inplace",
+      "trialDependencies": [
+        "baikai-0.10.1.0-inplace",
+        "baikai-claude-0.7.3.0-inplace",
+        "baikai-openai-0.7.3.0-inplace"
+      ]
+    },
+    {
+      "package": "shikumi",
+      "version": "0.5.1.0",
+      "component": "test:shikumi-test",
+      "source": "local",
+      "id": "shikumi-0.5.1.0-inplace-shikumi-test",
+      "trialDependencies": [
+        "baikai-0.10.1.0-inplace",
+        "baikai-claude-0.7.3.0-inplace",
+        "baikai-openai-0.7.3.0-inplace",
+        "shikumi-0.5.1.0-inplace"
+      ]
+    },
+    {
+      "package": "aeson",
+      "version": "2.2.5.1",
+      "component": "lib",
+      "source": "repo-tar",
+      "id": "sn-2.2.5.1-6fad1519",
+      "trialDependencies": []
+    },
+    {
+      "package": "wai",
+      "version": "3.2.5",
+      "component": "lib",
+      "source": "repo-tar",
+      "id": "w-3.2.5-0a370dab",
+      "trialDependencies": []
+    },
+    {
+      "package": "warp",
+      "version": "3.4.16",
+      "component": "lib",
+      "source": "repo-tar",
+      "id": "wrp-3.4.16-915b2316",
+      "trialDependencies": []
+    }
+  ]
+}

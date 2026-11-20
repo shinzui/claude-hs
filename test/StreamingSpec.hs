@@ -33,6 +33,7 @@ run = do
   fragmentedEvents
   streamToolContinuation
   streamFailures
+  legacyBridge
   putStrLn "Streaming: delivery, cancellation, framing, continuation and failure fixtures passed"
 
 event :: Text -> [(Key, Value)] -> Value
@@ -300,3 +301,19 @@ streamFailures = do
     streamMessageValue client defaultRequestOptions legacy (\_ _ -> pure Continue) >>= \case
       Left (InvalidRequest _) -> pure ()
       _ -> fail "Expected local failure for removed sampling"
+
+legacyBridge :: IO ()
+legacyBridge = do
+  let config = (defaultClientConfig "loopback-secret") {apiVersion = Just "2023-06-01"}
+      request = object ["model" .= ("legacy-model" :: Text), "max_tokens" .= (10 :: Int), "messages" .= ([] :: [Value]), "temperature" .= (0.5 :: Double)]
+      app req send = do
+        assertEqual "configured legacy API version" (Just "2023-06-01") (lookup "anthropic-version" (Wai.requestHeaders req))
+        requestJson req >>= \case
+          Object fields -> do
+            assertEqual "legacy sampling value" (Just (toJSON (0.5 :: Double))) (KeyMap.lookup "temperature" fields)
+            assertEqual "legacy empty history" (Just (toJSON ([] :: [Value]))) (KeyMap.lookup "messages" fields)
+          _ -> fail "Expected legacy request object"
+        send (sse (frame messageStart <> frame messageStop))
+  withClientConfig config app $ \client -> do
+    Response _ terminal <- streamMessageValue client defaultRequestOptions request (\_ _ -> pure Continue) >>= expectRight
+    assertEqual "legacy stream completed" Finished terminal

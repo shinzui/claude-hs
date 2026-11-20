@@ -49,7 +49,7 @@ EP-1 bootstraps the tooling under the [tooling ADR](../adr/0001-bootstrap-haskel
 | EP-2 | Stream message events as they arrive | [2-stream-message-events-as-they-arrive.md](../plans/2-stream-message-events-as-they-arrive.md) | EP-1, EP-4 | None | Complete |
 | EP-3 | Submit message batches and consume their results | [3-submit-message-batches-and-consume-their-results.md](../plans/3-submit-message-batches-and-consume-their-results.md) | EP-1 | None | Complete |
 | EP-4 | Support current Claude reasoning, tools, caching and citations | [4-support-current-claude-reasoning-tools-caching-and-citations.md](../plans/4-support-current-claude-reasoning-tools-caching-and-citations.md) | EP-1 | None | Complete |
-| EP-5 | Verify the client through Baikai, Shikumi and Shikigami | [5-verify-the-client-through-baikai-shikumi-and-shikigami.md](../plans/5-verify-the-client-through-baikai-shikumi-and-shikigami.md) | EP-2, EP-4 | None | Not Started |
+| EP-5 | Verify the client through Baikai, Shikumi and Shikigami | [5-verify-the-client-through-baikai-shikumi-and-shikigami.md](../plans/5-verify-the-client-through-baikai-shikumi-and-shikigami.md) | EP-2, EP-4 | None | Complete |
 
 ## Dependency Graph
 
@@ -65,11 +65,11 @@ Use that same candidate adapter in the Shikumi and Shikigami checks. Drive a sch
 
 ## Progress
 
-EP-1 passed with the locked toolchain. Its first working call compiled a Baikai-style request and captured the expected beta and x-session-affinity headers. EP-4 passed its feature and continuation roundtrips. EP-2 passed its SSE delivery and cancellation fixtures. EP-3 passed the enriched batch gate. The downstream trial remains open.
+All five child plans are complete. The credential-free client suite passed in the locked shell, including the enriched batch gate. Fresh consumer checkouts passed all three suites with the trial adapter and local candidate selected.
 
 ## Surprises & Discoveries
 
-
+The Baikai trial needed original event JSON, HTTP Date and gateway request IDs alongside the typed observations. It also needed version-specific empty history handling for its existing host configuration. The direct client still defaults to 2026-10-21. See the [replay ADR](../adr/0003-preserve-provider-content-for-assistant-replay.md) and [HTTP boundary ADR](../adr/0002-scope-credentials-and-response-lifetime-to-the-client.md).
 
 ## Decision Log
 
@@ -78,3 +78,7 @@ EP-1 passed with the locked toolchain. Its first working call compiled a Baikai-
 2026-11-20 — Bootstrap the shared Haskell toolchain in EP-1 with the Seihou `nix-haskell-flake` template so developers and CI can build the client with the same compiler and Cabal environment.
 
 ## Outcomes & Retrospective
+
+The library supports synchronous and streaming Messages, token counts and asynchronous batches. The Cabal build, example, source distribution and client suite passed with GHC 9.12.4. The enriched batch fixture validated shared request and response codecs.
+
+The [downstream trial](../../integration/consumers/README.md) records the checkout revisions, commands and resolved Cabal components. The Baikai, Shikumi and Shikigami suites passed 475, 301 and 820 tests respectively. The Shikigami fixtures measured exactly one wire request and one recorded attempt per success, terminal failure and cancellation. The trial retained correlation and usage where reported. [FRIC-2](../friction-log/2-concurrent-shikigami-fixture-deadlines-expire-during-the-consumer-trial.md) records why the runbook uses serial Tasty scheduling.

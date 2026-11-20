@@ -1,0 +1,129 @@
+diff --git a/shikumi/shikumi.cabal b/shikumi/shikumi.cabal
+index c8618b4..f9f0aac 100644
+--- a/shikumi/shikumi.cabal
++++ b/shikumi/shikumi.cabal
+@@ -149,6 +149,7 @@ test-suite shikumi-test
+     directory,
+     effectful,
+     generic-lens,
++    http-types,
+     lens,
+     shikumi ^>=0.5.1.0,
+     stm,
+@@ -159,3 +160,5 @@ test-suite shikumi-test
+     text,
+     time,
+     vector,
++    wai,
++    warp,
+diff --git a/shikumi/test/ProgramSpec.hs b/shikumi/test/ProgramSpec.hs
+index 1985a21..3fe96d4 100644
+--- a/shikumi/test/ProgramSpec.hs
++++ b/shikumi/test/ProgramSpec.hs
+@@ -2,14 +2,25 @@
+ -- @foldParams@ \/ @mapParams@ \/ @mapParamsAt@ and the ordering law).
+ module ProgramSpec (tests) where
+
++import Baikai.Auth (ApiKeySource (ApiKeyLiteral))
++import Baikai.Error qualified as Baikai
++import Baikai.Models.Generated (anthropic_claude_haiku_4_5)
++import Baikai.Provider.Claude.Api (claudeMessagesProvider)
++import Baikai.Provider.Registry (newProviderRegistryFrom)
+ import Control.Lens ((&), (.~))
++import Data.Aeson (Value (..), eitherDecode, encode, object, (.=))
++import Data.Aeson.KeyMap qualified as KM
+ import Data.Generics.Labels ()
+-import Data.IORef (newIORef)
++import Data.IORef (atomicModifyIORef', newIORef, readIORef)
+ import Data.List (foldl1')
+ import Data.List.NonEmpty qualified as NE
+ import Data.Text (Text)
+ import Data.Text qualified as T
++import Network.HTTP.Types (status200, status429)
++import Network.Wai qualified as Wai
++import Network.Wai.Handler.Warp (testWithApplication)
+ import Effectful (runEff)
++import Effectful.Dispatch.Dynamic (interpose)
+ import Effectful.Concurrent (runConcurrent)
+ import Effectful.Error.Static (runErrorNoCallStack)
+ import ProgramFixtures
+@@ -26,7 +37,10 @@ import ProgramFixtures
+     topicToOutline,
+     topicToVerdict,
+   )
+-import Shikumi.Error (ShikumiError (..))
++import Shikumi.Error (ShikumiError (..), isTransient)
++import Shikumi.LLM (LLM (..), runLLMWith)
++import Shikumi.LLM qualified as LLM
++import Shikumi.Routing (routeLLM, runRouting)
+ import Shikumi.Program
+   ( Params,
+     Program (Compose, Predict),
+@@ -42,7 +56,7 @@ import Shikumi.Program
+     sampleTemps,
+   )
+ import Test.Tasty (TestTree, testGroup)
+-import Test.Tasty.HUnit (assertBool, testCase, (@?=))
++import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+ import Test.Tasty.QuickCheck (NonNegative (..), Positive (..), testProperty, (===))
+
+ -- A two-stage program reused across the param tests.
+@@ -65,7 +79,8 @@ tests :: TestTree
+ tests =
+   testGroup
+     "ProgramSpec"
+-    [ testCase "M1: a single Predict node runs through the LLM effect to a typed output" $ do
++    [ candidatePrediction,
++      testCase "M1: a single Predict node runs through the LLM effect to a typed output" $ do
+         ref <- newIORef [outlineResponse]
+         out <-
+           runEff . runErrorNoCallStack @ShikumiError . runScriptedLLM ref $
+@@ -125,3 +140,48 @@ tests =
+               prog = cellPipeline k
+            in foldParams (mapParamsAt n f prog) === adjust n f (foldParams prog)
+     ]
++
++candidatePrediction :: TestTree
++candidatePrediction = testCase "candidate HTTP typed prediction and structured 429" $ do
++  captured <- newIORef []
++  let app req respond = do
++        Wai.pathInfo req @?= ["v1", "messages"]
++        lookup "x-api-key" (Wai.requestHeaders req) @?= Just "shikumi-trial-key"
++        body <- Wai.strictRequestBody req >>= either fail pure . eitherDecode
++        call <- atomicModifyIORef' captured (\bodies -> (bodies <> [body], length bodies))
++        if call == 0
++          then respond (Wai.responseLBS status200 [("Content-Type", "text/event-stream"), ("request-id", "req_shikumi_ok")] frames)
++          else respond (Wai.responseLBS status429 [("request-id", "req_shikumi_rate"), ("Retry-After", "7")] "{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"slow down\"}}")
++  testWithApplication (pure app) $ \port -> do
++    registry <- newProviderRegistryFrom [claudeMessagesProvider]
++    let selected = anthropic_claude_haiku_4_5 & #baseUrl .~ ("http://127.0.0.1:" <> T.pack (show port))
++        run = runEff . runErrorNoCallStack @ShikumiError . runLLMWith registry
++          . runRouting selected . routeLLM . interpose (\_ -> \case
++            Complete model context options -> LLM.complete model context (options & #apiKey .~ Just (ApiKeyLiteral "shikumi-trial-key"))
++            Stream model context options -> LLM.stream model context (options & #apiKey .~ Just (ApiKeyLiteral "shikumi-trial-key")))
++          $ runProgram (Predict topicToOutline emptyParams) (Topic "haskell")
++    run >>= (@?= Right (Outline {points = ["intro", "body", "end"]}))
++    run >>= \case
++      Left err@(ProviderError provider) -> do
++        Baikai.category provider @?= Baikai.RateLimited
++        Baikai.httpStatus provider @?= Just 429
++        Baikai.retryAfterSeconds provider @?= Just 7
++        assertBool "retry classification left to Shikumi" (isTransient err)
++      other -> assertFailure ("expected structured provider failure, got " <> show other)
++  bodies <- readIORef captured
++  length bodies @?= 2
++  mapM_ (\case
++    Object body -> do
++      assertBool "schema supplied independently" (KM.member "output_config" body)
++      KM.lookup "tools" body @?= Nothing
++      KM.lookup "tool_choice" body @?= Nothing
++    _ -> assertFailure "expected request object") bodies
++  where
++    frame tag fields = "data: " <> encode (object (("type" .= (tag :: Text)) : fields)) <> "\n\n"
++    frames =
++      "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_trial\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku-4-5\",\"content\":[],\"usage\":{\"input_tokens\":4,\"output_tokens\":0}}}\n\n"
++        <> frame "content_block_start" ["index" .= (0 :: Int), "content_block" .= object ["type" .= ("text" :: Text), "text" .= ("" :: Text)]]
++        <> frame "content_block_delta" ["index" .= (0 :: Int), "delta" .= object ["type" .= ("text_delta" :: Text), "text" .= ("{\"points\":[\"intro\",\"body\",\"end\"]}" :: Text)]]
++        <> frame "content_block_stop" ["index" .= (0 :: Int)]
++        <> frame "message_delta" ["delta" .= object ["stop_reason" .= ("end_turn" :: Text)], "usage" .= object ["output_tokens" .= (8 :: Int)]]
++        <> frame "message_stop" []

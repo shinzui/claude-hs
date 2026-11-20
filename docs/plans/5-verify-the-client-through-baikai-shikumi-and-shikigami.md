@@ -10,6 +10,12 @@ provenance:
     model: "gpt-6.2-astra"
     harness: "codex-cli"
     at: 2026-11-20T19:40:21Z
+  revisions:
+    - model: "gpt-6.2-sol"
+      harness: "codex-cli"
+      at: 2026-11-20T20:47:53Z
+      mode: "implement"
+      note: "Build and exercise the candidate driver in the downstream cohort."
 ---
 
 # Verify the client through Baikai, Shikumi and Shikigami
@@ -26,18 +32,30 @@ Prove that a caller can substitute the new library in the actual Baikai Claude H
 
 ## Progress
 
-- [ ] The trial Baikai adapter passes complete, streaming, continuation and cancellation checks through the candidate client.
-- [ ] Shikumi prediction and Shikigami governed attempts pass against that same adapter, with revisions, fixture commands and results recorded.
+- [x] 2026-11-20. The patched Baikai suite passed 475 tests, including complete and stream comparison, two signed tool rounds and socket cancellation through the actual HTTP driver.
+- [x] 2026-11-20. Shikumi passed 301 tests and Shikigami passed 820. Reapplying the patches in fresh checkouts reproduced all three suites and the local dependency selection.
 
 ## Surprises & Discoveries
+
+The existing provider's timeout fixture sends an empty conversation under its older wire version. The bridge allows that legacy shape and keeps the nonempty requirement for the current version. Baikai also exposes a manager-injection helper used by a redirect fixture. The trial changes the live driver at the provider boundary and retains that helper.
+
+The HTTP-date Retry-After path needs the response Date. The shared client now preserves it and provides a bounded, redacted error excerpt for the provider's status and overflow classifier.
+
+Shikigami's full test suite hit fixture deadlines with several Tasty workers. See [FRIC-2](../friction-log/2-concurrent-shikigami-fixture-deadlines-expire-during-the-consumer-trial.md) for the serial test command.
 
 
 
 ## Decision Log
 
+2026-11-20. Retain the trial provider's versioned request mapper and assembler. Replace its live HTTP driver with the candidate, translate errors and response correlation at the boundary, and project the candidate's validated events into the provider's current event types. This isolates a transport migration and preserves the request configuration digest.
+
 
 
 ## Outcomes & Retrospective
+
+The trial [runbook](../../integration/consumers/README.md) records checkout revisions, the local Cabal dependency selection and the test commands. The Shikumi fixture decoded native schema output without adding tool choice and retained HTTP 429 status, category and Retry-After. The governed Shikigami fixture observed one dispatch and one recorded attempt in each scenario. It retained provider correlation and usage on success, correlated terminal failure, and recorded an unknown terminal on cancellation. The cancellation fixtures verified socket release after the consumer reached its blocked read. Three further focused runs passed.
+
+FRIC-2 was accepted with serial Tasty scheduling. The [HTTP boundary ADR](../adr/0002-scope-credentials-and-response-lifetime-to-the-client.md) and [replay ADR](../adr/0003-preserve-provider-content-for-assistant-replay.md) record the durable transport and compatibility behavior.
 
 
 

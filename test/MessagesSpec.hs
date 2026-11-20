@@ -7,6 +7,7 @@ import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Network.HTTP.Types (status200, status302, status429, status502)
 import Network.Wai qualified as Wai
 import Support.Server
@@ -136,19 +137,20 @@ failureCases = do
   withClient app $ \client -> do
     let call fixture = createMessage client (defaultRequestOptions {extraHeaders = [("x-fixture", fixture)]}) request
     call "rate-limit" >>= \case
-      Left err@(ApiStatusError meta (Just (ApiError "rate_limit_error" detail))) -> do
-        assert "retry metadata" (meta == ResponseMetadata (Just "req_rate") (Just "3") 429 Nothing Nothing)
+      Left err@(ApiStatusError meta (Just (ApiError "rate_limit_error" detail)) excerpt) -> do
+        assertEqual "retry metadata" (Just "req_rate", Just "3", 429) (requestId meta, retryAfter meta, status meta)
+        assert "redacted HTTP body" (not ("loopback-secret" `Text.isInfixOf` excerpt))
         assertEqual "redacted detail" "Echo [redacted]" detail
         assert "secret absent from Show" (not ("loopback-secret" `isInfixOf` show err))
       _ -> fail "Expected structured rate limit"
     call "gateway" >>= \case
-      Left (ApiStatusError (ResponseMetadata Nothing Nothing 502 Nothing Nothing) Nothing) -> pure ()
+      Left (ApiStatusError (ResponseMetadata Nothing Nothing 502 _ _ _) Nothing "Bad gateway") -> pure ()
       _ -> fail "Expected non-JSON status error"
     call "invalid-json" >>= \case
-      Left (DecodeError (ResponseMetadata (Just "req_decode") Nothing 200 Nothing Nothing) _) -> pure ()
+      Left (DecodeError (ResponseMetadata (Just "req_decode") Nothing 200 _ _ _) _) -> pure ()
       _ -> fail "Expected JSON decode failure"
     call "redirect" >>= \case
-      Left (ApiStatusError (ResponseMetadata _ _ 302 Nothing Nothing) Nothing) -> pure ()
+      Left (ApiStatusError (ResponseMetadata _ _ 302 _ _ _) Nothing _) -> pure ()
       _ -> fail "Expected redirect to be returned as HTTP failure"
     call "disconnect" >>= \case
       Left (TransportError _ Disconnected) -> pure ()

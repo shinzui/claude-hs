@@ -21,6 +21,15 @@ in  Schema.Project::{
         , localPath = Some "."
         }
       ]
+    , packages =
+      [ Schema.Package::{
+        , name = "claude-hs"
+        , type = Schema.PackageType.Library
+        , language = Schema.Language.Haskell
+        , path = Some "."
+        , description = Some "Typed HTTP client for direct Claude Messages and batches"
+        }
+      ]
     , okfBundles =
       [ Schema.OkfBundle::{
         , name = "friction-log"

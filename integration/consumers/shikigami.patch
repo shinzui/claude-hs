@@ -1,0 +1,145 @@
+diff --git a/shikigami-core/test/Shikigami/DecisionRunnerSpec.hs b/shikigami-core/test/Shikigami/DecisionRunnerSpec.hs
+index b7039cbf..b04df100 100644
+--- a/shikigami-core/test/Shikigami/DecisionRunnerSpec.hs
++++ b/shikigami-core/test/Shikigami/DecisionRunnerSpec.hs
+@@ -14,9 +14,11 @@ import Baikai.Provider.Claude.Api (claudeMessagesProvider)
+ import Baikai.Provider.Registry (ApiProvider (..), apiProviderWith, newProviderRegistryFrom)
+ import Baikai.Response (Response (..), emptyResponse, errorResponse)
+ import Baikai.ResponseFormat (StructuredOutputSupport (NativeJsonSchema))
+-import Baikai.Stream (liftCompleteToStream)
++import Baikai.Stream (liftCompleteToStream, streamingComplete)
++import Baikai.Stream.Event qualified as Events
+ import Baikai.ThinkingLevel (ThinkingLevel (ThinkingHigh, ThinkingNone))
+ import Control.Concurrent (forkIO, threadDelay)
++import Control.Concurrent.Async (asyncThreadId, cancel, waitCatch, withAsync)
+ import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+ import Control.Exception (SomeException, throwIO, try)
+ import Control.Monad (void)
+@@ -37,9 +39,10 @@ import Data.Text qualified as Text
+ import Data.Text.Encoding qualified as TE
+ import Data.Time (UTCTime (..), fromGregorian, getCurrentTime)
+ import Data.Vector qualified as V
++import GHC.Conc (BlockReason (BlockedOnSTM), ThreadStatus (ThreadBlocked), threadStatus)
+ import GHC.Generics (Generic)
+ import Keiro.Workflow.Types (WorkflowId (..))
+-import Network.HTTP.Types (status200)
++import Network.HTTP.Types (status200, status400)
+ import Network.Wai qualified as Wai
+ import Network.Wai.Handler.Warp (testWithApplication)
+ import Settei.Env (envSnapshot, environmentSource)
+@@ -72,6 +75,8 @@ import Shikumi.Program (Params (..), Program (..), emptyParams)
+ import Shikumi.Schema (FromModel, ToSchema, Validatable)
+ import Shikumi.Schema qualified as Schema
+ import Shikumi.Signature (mkSignature)
++import Streamly.Data.Stream qualified as Stream
++import System.Timeout (timeout)
+ import Test.Tasty (TestTree, testGroup)
+ import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+
+@@ -176,7 +181,8 @@ tests :: TestTree
+ tests =
+   testGroup
+     "governed decision runner"
+-    [ testCase "confidence keeps numeric JSON/schema and refuses invalid model leaves" do
++    [ candidateAttempts,
++      testCase "confidence keeps numeric JSON/schema and refuses invalid model leaves" do
+         let accepted = mustRight (Examples.parseModelConfidence 0.25)
+         Aeson.encode accepted @?= "0.25"
+         Aeson.eitherDecode (Aeson.encode accepted) @?= Right accepted
+@@ -517,3 +523,96 @@ forbiddenProfile = resolvedProfileFor content
+
+ fixtureModelAlias :: AliasText.Text -> Alias.ModelAlias
+ fixtureModelAlias = either (error . show) id . Alias.parseModelAlias
++
++candidateAttempts :: TestTree
++candidateAttempts = testGroup "candidate HTTP governed attempts"
++  [ trial "success" CallSucceeded,
++    trial "terminal failure" CallFailed,
++    trial "cancellation" CallUnknown
++  ]
++  where
++    trial name expected = testCase name do
++      captured <- newIORef []
++      ready <- newEmptyMVar
++      closed <- newEmptyMVar
++      let program = register "candidate" predict Right
++          application request respond = do
++            Wai.pathInfo request @?= ["v1", "messages"]
++            lookup "x-api-key" (Wai.requestHeaders request) @?= Just "governed-fixture-key"
++            body <- Wai.strictRequestBody request >>= either fail pure . Aeson.eitherDecode @Value
++            atomicModifyIORef' captured (\bodies -> (bodies <> [body], ()))
++            case expected of
++              CallSucceeded -> respond (Wai.responseLBS status200 [("Content-Type", "text/event-stream"), ("request-id", "req_trial_success")] cachedFrames)
++              CallFailed -> respond (Wai.responseLBS status400 [("request-id", "req_trial_failed")] "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"fixture terminal\"}}")
++              CallUnknown -> respond $ Wai.responseRaw
++                (\recv send -> do
++                  send "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
++                  send (LBS.toStrict (LBS.takeWhile (/= 10) decisionFrames) <> "\n\n")
++                  send "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"
++                  send "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"waiting\"}}\n\n"
++                  recv >>= putMVar closed)
++                (Wai.responseLBS status200 [] "")
++      testWithApplication (pure application) \port -> do
++        let model = anthropic_claude_haiku_4_5 & #baseUrl .~ ("http://127.0.0.1:" <> Text.pack (show port))
++            selected = binding "triage" model "governed-fixture-key"
++        (hooks, inspect) <- newMemoryCallHooks
++        let signal event = do
++              case event of
++                Events.TextDelta _ -> putMVar ready ()
++                _ -> pure ()
++              pure event
++            observedComplete =
++              streamingComplete (\m c o -> Stream.mapM signal (claudeMessagesProvider.stream m c o))
++            provider =
++              if expected == CallUnknown
++                then claudeMessagesProvider & #complete .~ observedComplete
++                else claudeMessagesProvider
++        base <- environment program provider hooks
++        let env = base
++              & #catalog .~ mustRight (modelCatalog [selected])
++              & #timeoutMicros .~ mustRight (parseDecisionTimeout 15_000_000)
++            invoke = runDecisionProgramWithAccounting
++              (\_ _ options -> pure (Right (options & #cacheRetention .~ Just CacheRetentionLong, hooks)))
++              env (preparedFor program selected) (programRef program) input
++        case expected of
++          CallSucceeded -> invoke >>= (\(result, _) -> result @?= Right input)
++          CallFailed -> invoke >>= (\(result, _) -> assertBool "provider failure reached the runtime" (isLeft result))
++          CallUnknown -> withAsync invoke \running -> do
++            timeout 5_000_000 (takeMVar ready) >>= (@?= Just ())
++            let awaitDrain = threadStatus (asyncThreadId running) >>= \case
++                  ThreadBlocked BlockedOnSTM -> pure ()
++                  _ -> threadDelay 1000 >> awaitDrain
++            timeout 5_000_000 awaitDrain >>= (@?= Just ())
++            cancel running
++            waitCatch running >>= (assertBool "cancel propagated" . isLeft)
++            timeout 5_000_000 (takeMVar closed) >>= (@?= Just "")
++        requests <- readIORef captured
++        case requests of
++          [body] -> do
++            assertBool "schema sent" (field "output_config" body /= Nothing)
++            field "tools" body @?= Nothing
++            (field "cache_control" body >>= field "ttl") @?= Just (String "1h")
++          _ -> assertFailure ("expected one wire dispatch, observed " <> show (length requests))
++        calls <- inspect
++        case Map.elems calls of
++          [call] -> case call.terminal of
++            Just (actual, evidence) -> do
++              actual @?= expected
++              case expected of
++                CallSucceeded -> do
++                  (evidence >>= field "provider_request_id" >>= field "observed") @?= Just (String "req_trial_success")
++                  let observedUsage = evidence >>= field "usage" >>= field "observed"
++                  (observedUsage >>= field "output_tokens") @?= Just (Aeson.Number 12)
++                  (observedUsage >>= field "cache_write_tokens") @?= Just (Aeson.Number 40)
++                  (observedUsage >>= field "cache_read_tokens") @?= Just (Aeson.Number 60)
++                CallFailed ->
++                  (evidence >>= field "provider_request_id" >>= field "observed") @?= Just (String "req_trial_failed")
++                CallUnknown -> evidence @?= Nothing
++            _ -> assertFailure "attempt terminal missing"
++          _ -> assertFailure ("expected one recorded attempt, observed " <> show (Map.size calls))
++
++    field :: Aeson.Key -> Value -> Maybe Value
++    field name = AesonTypes.parseMaybe (Aeson.withObject "candidate value" (.: name))
++    cachedFrames =
++      let (_, rest) = LBS.break (== 10) decisionFrames
++       in "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_trial_cache\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-haiku-4-5\",\"usage\":{\"input_tokens\":11,\"output_tokens\":0,\"cache_creation_input_tokens\":40,\"cache_read_input_tokens\":60}}}" <> rest

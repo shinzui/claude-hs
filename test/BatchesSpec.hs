@@ -131,6 +131,7 @@ incrementalResults = withBatchId $ \ident -> do
         results <- newIORef []
         let app req send = do
               assertEqual "configured results route" ("GET", "/v1/messages/batches/msgbatch_fixture/results") (Wai.requestMethod req, Wai.rawPathInfo req)
+              assertEqual "results accept" (Just "application/binary") (lookup "accept" (Wai.requestHeaders req))
               send $ Wai.responseStream status200 [("request-id", "req_batch"), ("content-type", "application/x-jsonlines")] $ \write flush -> do
                 write (lazyByteString (LBS.take 9 first)) >> flush
                 write (lazyByteString (LBS.drop 9 first <> "\r\n")) >> flush

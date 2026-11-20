@@ -2,6 +2,12 @@
 
 ## 2026-11-20
 
+* **Update**: FRIC-2 accepted: The complete Shikigami suite passes with serial fixture scheduling.
+
+
+* **Addition**: FRIC-2 records detour environment friction with mori://shinzui/shikigami/packages/shikigami-core: Concurrent Shikigami fixture deadlines expire during the consumer trial
+
+
 * **Update**: FRIC-1 accepted: Verified the exclusion and repeated the Seihou preview.
 
 
