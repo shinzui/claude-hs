@@ -2,6 +2,9 @@
 
 ## 2026-11-20
 
+* **Addition**: FRIC-3 records blocked environment friction with https://hackage.haskell.org/: Baikai's Hackage dependency source cannot resolve claude-hs
+
+
 * **Update**: FRIC-2 accepted: The complete Shikigami suite passes with serial fixture scheduling.
 
 

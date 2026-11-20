@@ -1,0 +1,24 @@
+--- a/cabal.project
++++ b/cabal.project
+@@ -96,7 +96,6 @@
+   cereal ==0.5.8.3,
+   character-ps ==0.1,
+   charset ==0.3.12,
+-  claude ==1.5.0,
+   clock ==0.8.4,
+   colour ==2.3.7,
+   comonad ==5.0.10,
+@@ -427,13 +426,9 @@
+ package postgresql-libpq
+   flags: +use-pkg-config
+
+--- The third-party claude package still caps http-client-tls below 0.4, which
+--- the selected Crypton 1.1 / TLS 2.x cohort requires; its used API is
+--- compatible. Remove after a Hackage revision or release widens the bound.
+ -- kiroku-metrics 0.4.0.0 uses kiroku-cli 0.2.0.11. Its sole TLS API
+ -- use is the unchanged tlsManagerSettings; the Store 0.13 CLI cannot replace it.
+ allow-newer:
+-  claude:http-client-tls,
+   kiroku-cli:http-client-tls
+
+ -- Unpublished public action boundary, pinned to verified upstream HEAD.

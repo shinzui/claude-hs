@@ -1,0 +1,2496 @@
+diff --git a/baikai-claude/baikai-claude.cabal b/baikai-claude/baikai-claude.cabal
+index 554514b..0412b80 100644
+--- a/baikai-claude/baikai-claude.cabal
++++ b/baikai-claude/baikai-claude.cabal
+@@ -78,7 +78,7 @@ library
+     base64-bytestring ^>=1.2,
+     bytestring ^>=0.12,
+     case-insensitive ^>=1.2,
+-    claude ^>=1.5,
++    claude-hs ==0.1.0.0,
+     containers ^>=0.7,
+     cradle ^>=0.0,
+     cryptohash-sha256 ^>=0.11,
+@@ -131,7 +131,7 @@ test-suite baikai-claude-test
+     base >=4.20 && <5,
+     bytestring,
+     case-insensitive,
+-    claude,
++    claude-hs,
+     containers,
+     directory,
+     filepath,
+@@ -152,6 +152,8 @@ test-suite baikai-claude-test
+     time,
+     tls,
+     vector,
++    wai,
++    warp,
+
+   if !os(windows)
+     build-depends: unix ^>=2.8
+diff --git a/baikai-claude/src/Baikai/Provider/Claude/Api.hs b/baikai-claude/src/Baikai/Provider/Claude/Api.hs
+index 3584329..e5ea286 100644
+--- a/baikai-claude/src/Baikai/Provider/Claude/Api.hs
++++ b/baikai-claude/src/Baikai/Provider/Claude/Api.hs
+@@ -66,7 +66,7 @@ claudeMessagesProvider =
+ --
+ -- Forks one worker thread per call that drives the local Claude SSE
+ -- transport, pushing classified errors and typed
+--- 'Claude.V1.Messages.MessageStreamEvent' values onto a bounded
++-- 'Claude.Streaming.StreamPayload' values onto a bounded
+ -- 'Baikai.Provider.Internal.StreamWorker.FrameQueue'. The returned
+ -- 'Stream' is a translator: it pulls raw events off that queue and emits
+ -- zero or more 'AssistantMessageEvent' values per upstream event,
+diff --git a/baikai-claude/src/Baikai/Provider/Claude/Internal/Request.hs b/baikai-claude/src/Baikai/Provider/Claude/Internal/Request.hs
+index b53feb7..95dda97 100644
+--- a/baikai-claude/src/Baikai/Provider/Claude/Internal/Request.hs
++++ b/baikai-claude/src/Baikai/Provider/Claude/Internal/Request.hs
+@@ -38,16 +38,18 @@ import Baikai.ResponseFormat (JsonSchemaFormat (..), ResponseFormat (..))
+ import Baikai.Speed (Speed (..))
+ import Baikai.ThinkingLevel (ThinkingLevel (..), renderThinkingLevel, thinkingTokenBudget)
+ import Baikai.Tool qualified as Tool
+-import Claude.V1.Messages qualified as Messages
+-import Claude.V1.Tool qualified as ClaudeTool
++import Claude.Messages qualified as Messages
+ import Control.Lens ((%~), (&), (.~), (^.))
+ import Crypto.Hash.SHA256 qualified as SHA256
+ import Data.Aeson ((.=))
+ import Data.Aeson qualified as Aeson
++import Data.Aeson.KeyMap qualified as KeyMap
+ import Data.ByteString.Base16 qualified as Base16
+ import Data.ByteString.Base64 qualified as Base64
+ import Data.Char (isAlphaNum, isAscii)
+ import Data.Generics.Labels ()
++import Data.List.NonEmpty (NonEmpty (..))
++import Data.List.NonEmpty qualified as NonEmpty
+ import Data.Maybe (catMaybes, fromMaybe)
+ import Data.Text (Text)
+ import Data.Text qualified as Text
+@@ -61,14 +63,7 @@ import Numeric.Natural (Natural)
+ -- Request mapping: Context and Options onto the SDK's request record.
+ -- ============================================================
+
+--- | The wire wants an absent field for "no stop sequences", and
+--- 'Baikai.Options.stopSequences' says that with an empty list — the one
+--- representation, where @Nothing@ and @Just []@ used to be two.
+-nonEmptyStops :: [Text] -> Maybe (Vector.Vector Text)
+-nonEmptyStops [] = Nothing
+-nonEmptyStops xs = Just (Vector.fromList xs)
+-
+--- | Map a baikai request onto the SDK's 'Messages.CreateMessage', and
++-- | Map a baikai request onto the SDK's 'Messages.MessageRequest', and
+ -- describe what the caller's reasoning-effort preference became on the
+ -- way.
+ --
+@@ -79,7 +74,7 @@ nonEmptyStops xs = Just (Vector.fromList xs)
+ -- feed into it. A trace sink asked to re-derive it would have to
+ -- reimplement every one of them.
+ mapRequest ::
+-  Model -> Context -> Options -> Either Text (Messages.CreateMessage, ThinkingTranslation)
++  Model -> Context -> Options -> Either Text (Messages.MessageRequest, ThinkingTranslation)
+ mapRequest m ctx opts = do
+   either (Left . Error.message) pure (Context.refuseAssistantDataHistory ctx)
+   case opts ^. #toolChoice of
+@@ -101,6 +96,7 @@ mapRequest m ctx opts = do
+     )
+     (ctx ^. #messages)
+   msgs <- catMaybes <$> traverse mapMessage (Vector.toList (ctx ^. #messages))
++  outputConfig <- traverse mkAnthropicOutputConfig (opts ^. #responseFormat)
+   let compat = anthropicMessagesCompatFor m
+       cap = m ^. #maxOutputTokens
+       baseTokens = resolveBaseTokens m opts
+@@ -110,32 +106,25 @@ mapRequest m ctx opts = do
+         Just b -> clamp (baseTokens + b)
+         Nothing -> clamp baseTokens
+       cacheControlField = computeCacheControl compat (opts ^. #cacheRetention)
+-      toolsVec = ctx ^. #tools
+-      toolsField =
+-        if Vector.null toolsVec
+-          then Nothing
+-          else Just (Vector.map (mkAnthropicTool compat) toolsVec)
+-      toolChoiceField = case opts ^. #toolChoice of
+-        Just Tool.ToolChoiceNone -> Nothing
+-        Just tc -> Just (mkAnthropicToolChoice tc)
+-        Nothing -> Nothing
+-      outputConfigField = mergeEffort (effort plan) (fmap mkAnthropicOutputConfig (opts ^. #responseFormat))
++      features =
++        Messages.MessageFeatures
++          (mergeEffort (effort plan) outputConfig)
++          (field plan)
++          cacheControlField
++          (map mkAnthropicTool (Vector.toList (ctx ^. #tools)))
++          (mkAnthropicToolChoice <$> (opts ^. #toolChoice))
++          (fst (planSpeed compat (opts ^. #speed)))
++      conversation =
++        Messages.withConversationHistory msgs $
++          Messages.EmptyConversation (m ^. #modelId) (Messages.SystemText <$> (ctx ^. #systemPrompt)) features
++      controls =
++        Messages.defaultRequestControls
++          { Messages.temperature = sampling ^. #temperature,
++            Messages.topP = sampling ^. #topP
++          }
++  let limit = fromMaybe Messages.cacheOnly (Messages.maxTokens maxTokensField_)
+   pure
+-    ( Messages._CreateMessage
+-        { Messages.model = m ^. #modelId,
+-          Messages.messages = Vector.fromList msgs,
+-          Messages.max_tokens = maxTokensField_,
+-          Messages.system = fmap Messages.SystemPromptText (ctx ^. #systemPrompt),
+-          Messages.temperature = sampling ^. #temperature,
+-          Messages.top_p = sampling ^. #topP,
+-          Messages.stop_sequences = nonEmptyStops (opts ^. #stopSequences),
+-          Messages.tools = toolsField,
+-          Messages.tool_choice = toolChoiceField,
+-          Messages.cache_control = cacheControlField,
+-          Messages.speed = fst (planSpeed compat (opts ^. #speed)),
+-          Messages.thinking = field plan,
+-          Messages.output_config = outputConfigField
+-        },
++    ( Messages.withRequestControls controls (Messages.MessageRequest conversation limit (opts ^. #stopSequences)),
+       translation
+     )
+
+@@ -144,7 +133,7 @@ unsupportedForcedChoice = Left "This model does not support forced tool choice;
+
+ -- | The sampling parameters that will reach the wire, after the compat
+ -- record's gate. 'Nothing' means the field is omitted — the SDK encodes
+--- 'Messages.CreateMessage' with @omitNothingFields = True@, so a
++-- 'Messages.MessageRequest' with @omitNothingFields = True@, so a
+ -- 'Nothing' is genuinely absent from the request body rather than a
+ -- JSON @null@ the provider would reject.
+ data SamplingPlan = SamplingPlan
+@@ -269,50 +258,27 @@ describeThinkingFor :: Model -> Options -> ThinkingTranslation
+ describeThinkingFor m opts = snd (planThinking m opts)
+
+ mergeEffort :: Maybe Text -> Maybe Messages.OutputConfig -> Maybe Messages.OutputConfig
+-mergeEffort Nothing cfg = cfg
+-mergeEffort (Just e) Nothing = Just (Messages.effortConfig e)
+-mergeEffort (Just e) (Just cfg) = Just cfg {Messages.effort = Just e}
++mergeEffort Nothing config = config
++mergeEffort (Just value) config =
++  Just (Messages.OutputConfig (Just (Messages.VersionedEffort value)) (config >>= Messages.schema))
+
+--- | Map a baikai 'ResponseFormat' onto the upstream Anthropic
+--- 'Messages.OutputConfig'. 'JsonSchema' forwards the schema
+--- verbatim via 'Messages.jsonSchemaConfig'. Anthropic's structured
+--- outputs are always schema-enforcing, so the baikai 'strict' flag
+--- has no wire analog and is dropped. 'JsonObject' (plain-JSON mode)
+--- has no native Anthropic equivalent — 'output_config' requires a
+--- schema — so it downgrades to a permissive @{"type":"object"}@
+--- schema, which still forces the model to emit a JSON object.
+-mkAnthropicOutputConfig :: ResponseFormat -> Messages.OutputConfig
++mkAnthropicOutputConfig :: ResponseFormat -> Either Text Messages.OutputConfig
+ mkAnthropicOutputConfig = \case
+-  JsonSchema f -> Messages.jsonSchemaConfig f.schema
+-  JsonObject ->
+-    Messages.jsonSchemaConfig
+-      (Aeson.object ["type" .= ("object" :: Text)])
++  JsonSchema spec -> case spec.schema of
++    Aeson.Object schema -> Right (Messages.OutputConfig Nothing (Just schema))
++    _ -> Left "Anthropic Messages requires the output schema to be a JSON object"
++  JsonObject -> Right (Messages.OutputConfig Nothing (Just (KeyMap.singleton "type" (Aeson.String "object"))))
+
+--- | Translate the call-time 'Baikai.CacheRetention' preference into
+--- the Anthropic SDK's @cache_control@ shape.
+---
+--- 'CacheRetentionNone' (and 'Nothing') turn the field off entirely.
+--- 'CacheRetentionShort' uses the ephemeral marker with no TTL (the
+--- provider default). 'CacheRetentionLong' asks for the @"1h"@ TTL
+--- when the host advertises 'supportsLongCacheRetention'; otherwise it
+--- transparently downgrades to short retention.
+ computeCacheControl ::
+   AnthropicMessagesCompat ->
+   Maybe CacheRetention ->
+   Maybe Messages.CacheControl
+ computeCacheControl _ Nothing = Nothing
+ computeCacheControl _ (Just CacheRetentionNone) = Nothing
+-computeCacheControl _ (Just CacheRetentionShort) =
+-  Just Messages.CacheControl {Messages.type_ = "ephemeral", Messages.ttl = Nothing}
++computeCacheControl _ (Just CacheRetentionShort) = Just (Messages.Ephemeral Nothing)
+ computeCacheControl compat (Just CacheRetentionLong)
+-  | supportsLongCacheRetention compat =
+-      Just
+-        Messages.CacheControl
+-          { Messages.type_ = "ephemeral",
+-            Messages.ttl = Just (Messages.CacheTTLDuration "1h")
+-          }
+-  | otherwise =
+-      Just Messages.CacheControl {Messages.type_ = "ephemeral", Messages.ttl = Nothing}
++  | compat ^. #supportsLongCacheRetention = Just (Messages.Ephemeral (Just Messages.OneHour))
++  | otherwise = Just (Messages.Ephemeral Nothing)
+
+ -- | Translate the call-time 'Baikai.ThinkingLevel' preference into
+ -- the Anthropic SDK's 'Messages.Thinking' shape.
+@@ -413,7 +379,7 @@ computeThinking compat m (Just lvl)
+   | thinkingStyle compat == AnthropicThinkingAdaptive =
+       let e = adaptiveEffort lvl
+        in ( ThinkingPlan
+-              { field = Just (Messages.ThinkingAdaptiveWithDisplay Messages.ThinkingSummarized),
++              { field = Just (Messages.Adaptive (Just Messages.Summarized)),
+                 effort = Just e,
+                 budget = Nothing
+               },
+@@ -430,7 +396,7 @@ computeThinking compat m (Just lvl)
+   | otherwise =
+       let b = thinkingTokenBudget lvl
+        in ( ThinkingPlan
+-              { field = Just Messages.ThinkingEnabled {Messages.budget_tokens = b},
++              { field = Just (Messages.ManualBudget b Nothing),
+                 effort = Nothing,
+                 budget = Just b
+               },
+@@ -504,34 +470,26 @@ dropThinking adj t =
+ -- The compat record is accepted at this layer for call-site
+ -- consistency; per-tool @cache_control@ markers are applied by
+ -- 'Baikai.Provider.Claude.Shape.injectToolCacheControl'.
+-mkAnthropicTool :: AnthropicMessagesCompat -> Tool.Tool -> ClaudeTool.ToolDefinition
+-mkAnthropicTool _compat t =
+-  ClaudeTool.inlineTool
+-    ( ClaudeTool.functionTool
+-        (Tool.name t)
+-        (Just (Tool.description t))
+-        (Tool.parameters t)
+-    )
++mkAnthropicTool :: Tool.Tool -> Messages.Tool
++mkAnthropicTool tool =
++  case Tool.parameters tool of
++    Aeson.Object schema -> Messages.CustomTool (Messages.ClientTool (Tool.name tool) (Just (Tool.description tool)) schema Nothing Nothing)
++    schema ->
++      Messages.VersionedTool (KeyMap.fromList ["name" .= Tool.name tool, "description" .= Tool.description tool, "input_schema" .= schema])
+
+--- | Map a baikai 'Tool.ToolChoice' into the upstream Anthropic
+--- 'ClaudeTool.ToolChoice'. 'Tool.ToolChoiceNone' is handled by the
+--- raw request shaper because the SDK lacks a @none@ constructor.
+--- 'Tool.ToolChoiceRequired' maps to Anthropic's
+--- @any@ which is the closest equivalent ("must call some tool").
+-mkAnthropicToolChoice :: Tool.ToolChoice -> ClaudeTool.ToolChoice
++mkAnthropicToolChoice :: Tool.ToolChoice -> Messages.ToolChoice
+ mkAnthropicToolChoice = \case
+-  Tool.ToolChoiceAuto -> ClaudeTool.ToolChoice_Auto
+-  Tool.ToolChoiceRequired -> ClaudeTool.ToolChoice_Any
+-  Tool.ToolChoiceSpecific n -> ClaudeTool.ToolChoice_Tool {ClaudeTool.name = n}
+-  -- Unreachable in typed requests: ToolChoiceNone is injected by the shaper.
+-  Tool.ToolChoiceNone -> ClaudeTool.ToolChoice_Auto
++  Tool.ToolChoiceAuto -> Messages.AutoTool False
++  Tool.ToolChoiceRequired -> Messages.AnyTool False
++  Tool.ToolChoiceSpecific name -> Messages.NamedTool name False
++  Tool.ToolChoiceNone -> Messages.NoTool
+
+ -- | Anthropic enforces @[a-zA-Z0-9_-]@ on tool-call ids and caps their
+ -- length at 64 characters. Callers may have used any naming convention,
+ -- so the provider boundary normalizes here whenever an id is
+ -- round-tripped back to Anthropic — both on assistant turn replay
+--- ('Messages.Content_Tool_Use') and on tool-result messages
+--- ('Messages.Content_Tool_Result').
++-- ('Messages.InputToolUse') and on tool-result messages
++-- ('Messages.InputToolResult').
+ --
+ -- An id that already satisfies the rule passes through byte for byte.
+ -- That covers every id either provider actually mints — Anthropic's
+@@ -592,125 +550,54 @@ normalizeToolCallId original
+ mapMessage :: Msg.Message -> Either Text (Maybe Messages.Message)
+ mapMessage = \case
+   Msg.UserMessage Msg.UserPayload {Msg.content = uc} ->
+-    let blocks = Vector.mapMaybe userContentToBlock uc
+-     in if Vector.null blocks
+-          then
+-            Left
+-              "Anthropic Messages rejects a user turn with no content blocks; \
+-              \this one had none, or only empty text"
+-          else
+-            Right
+-              ( Just
+-                  Messages.Message
+-                    { Messages.role = Messages.User,
+-                      Messages.content = blocks,
+-                      Messages.cache_control = Nothing
+-                    }
+-              )
++    case NonEmpty.nonEmpty (Vector.toList (Vector.mapMaybe userContentToBlock uc)) of
++      Nothing -> Left "Anthropic Messages rejects a user turn with no content blocks; this one had none, or only empty text"
++      Just blocks -> Right (Just (Messages.Message Messages.User blocks))
+   Msg.AssistantMessage Msg.AssistantPayload {Msg.content = ac} ->
+-    let blocks = Vector.mapMaybe assistantContentToBlock ac
++    let blocks = Vector.toList (Vector.mapMaybe assistantContentToBlock ac)
+      in case duplicateToolUseId blocks of
+-          Just dup ->
+-            Left ("duplicate tool_use id after normalisation: " <> dup)
+-          Nothing
+-            | Vector.null blocks -> Right Nothing
+-            | otherwise ->
+-                Right
+-                  ( Just
+-                      Messages.Message
+-                        { Messages.role = Messages.Assistant,
+-                          Messages.content = blocks,
+-                          Messages.cache_control = Nothing
+-                        }
+-                  )
+-  Msg.ToolResultMessage
+-    Msg.ToolResultPayload
+-      { Msg.toolCallId = tid,
+-        Msg.content = trc,
+-        Msg.isError = err
+-      } ->
+-      case concatToolResultText trc of
+-        Left unsupported -> Left unsupported
+-        Right body ->
+-          Right
+-            ( Just
+-                Messages.Message
+-                  { Messages.role = Messages.User,
+-                    Messages.content =
+-                      Vector.singleton
+-                        Messages.Content_Tool_Result
+-                          { Messages.tool_use_id = normalizeToolCallId tid,
+-                            Messages.content = nonEmpty body,
+-                            Messages.is_error = Just err
+-                          },
+-                    Messages.cache_control = Nothing
+-                  }
+-            )
++          Just dup -> Left ("duplicate tool_use id after normalisation: " <> dup)
++          Nothing -> Right (Messages.Message Messages.Assistant <$> NonEmpty.nonEmpty blocks)
++  Msg.ToolResultMessage Msg.ToolResultPayload {Msg.toolCallId = tid, Msg.content = trc, Msg.isError = err} -> do
++    body <- concatToolResultText trc
++    let payload = if Text.null body then Messages.EmptyToolResult else Messages.ToolResultText body
++        block = Messages.InputToolResult (Messages.ToolResult (normalizeToolCallId tid) payload (Just err) Nothing)
++    Right (Just (Messages.Message Messages.User (block :| [])))
+
+--- | The first @tool_use@ id that appears twice in one assistant turn,
+--- if any. Ids are already normalised at this point, so this catches the
+--- residual hash collision as well as a caller that reused an id.
+-duplicateToolUseId :: Vector Messages.Content -> Maybe Text
+-duplicateToolUseId = go [] . Vector.toList
++-- | IDs have already been normalised, so this also catches collisions.
++duplicateToolUseId :: [Messages.InputBlock] -> Maybe Text
++duplicateToolUseId = go []
+   where
+     go _ [] = Nothing
+-    go seen (Messages.Content_Tool_Use {Messages.id = i} : rest)
++    go seen (Messages.InputToolUse i _ _ _ : rest)
+       | i `elem` seen = Just i
+       | otherwise = go (i : seen) rest
+     go seen (_ : rest) = go seen rest
+
+--- | An empty text block is dropped: Anthropic rejects
+--- @{"type":"text","text":""}@ outright, and an empty block carries
+--- nothing the model or the caller said.
+-userContentToBlock :: Content.UserContent -> Maybe Messages.Content
++userContentToBlock :: Content.UserContent -> Maybe Messages.InputBlock
+ userContentToBlock = \case
+   Content.UserText (Content.TextContent t)
+     | Text.null t -> Nothing
+-    | otherwise ->
+-        Just Messages.Content_Text {Messages.text = t, Messages.cache_control = Nothing}
++    | otherwise -> Just (Messages.InputText t)
+   Content.UserData v -> userContentToBlock (Content.UserText (Content.TextContent (Content.canonicalDataText v)))
+   Content.UserImage img ->
+-    Just
+-      Messages.Content_Image
+-        { Messages.source =
+-            Messages.ImageSource
+-              { Messages.type_ = "base64",
+-                Messages.media_type = Content.mimeType img,
+-                Messages.data_ = Text.decodeUtf8 (Base64.encode (Content.imageData img))
+-              },
+-          Messages.cache_control = Nothing
+-        }
++    Just (Messages.InputImage (Messages.Base64Image (Content.mimeType img) (Text.decodeUtf8 (Base64.encode (Content.imageData img)))))
+
+--- | As 'userContentToBlock' for empty text. Unsigned thinking is also
+--- dropped, because Anthropic rejects a thinking block whose signature
+--- is missing; a turn left with no blocks at all is then dropped
+--- entirely by 'mapMessage'.
+-assistantContentToBlock :: Content.AssistantContent -> Maybe Messages.Content
++assistantContentToBlock :: Content.AssistantContent -> Maybe Messages.InputBlock
+ assistantContentToBlock = \case
+   Content.AssistantText (Content.TextContent t)
+     | Text.null t -> Nothing
++    | otherwise -> Just (Messages.InputText t)
++  Content.AssistantThinking th
++    | Content.redacted th ->
++        Just (reasoning "redacted_thinking" ["data" .= Content.thinking th])
+     | otherwise ->
+-        Just Messages.Content_Text {Messages.text = t, Messages.cache_control = Nothing}
+-  Content.AssistantThinking th ->
+-    if Content.redacted th
+-      then Just Messages.Content_Redacted_Thinking {Messages.data_ = Content.thinking th}
+-      else case Content.signature th of
+-        Just sig ->
+-          Just
+-            Messages.Content_Thinking
+-              { Messages.thinking = Content.thinking th,
+-                Messages.signature = sig
+-              }
+-        Nothing -> Nothing
++        (\sig -> reasoning "thinking" ["thinking" .= Content.thinking th, "signature" .= sig]) <$> Content.signature th
+   Content.AssistantData _ -> Nothing
+   Content.AssistantToolCall tc ->
+-    Just
+-      Messages.Content_Tool_Use
+-        { Messages.id = normalizeToolCallId (Content.id_ tc),
+-          Messages.name = Content.name tc,
+-          Messages.input = Content.arguments tc,
+-          Messages.caller = Nothing
+-        }
++    Just (Messages.InputToolUse (normalizeToolCallId (Content.id_ tc)) (Content.name tc) (Content.arguments tc) Nothing)
++  where
++    reasoning tag fields = Messages.VersionedBlock (KeyMap.fromList (("type" .= (tag :: Text)) : fields))
+
+ concatToolResultText :: Vector Content.ToolResultContent -> Either Text Text
+ concatToolResultText =
+@@ -721,16 +608,11 @@ concatToolResultText =
+       Content.ToolResultImage _ ->
+         Left "Anthropic Messages cannot encode ToolResultImage blocks in tool-result messages"
+
+-nonEmpty :: Text -> Maybe Text
+-nonEmpty t
+-  | Text.null t = Nothing
+-  | otherwise = Just t
+-
+ -- | One capability gate shared by wire mapping, headers and the describer.
+ planSpeed :: AnthropicMessagesCompat -> Maybe Speed -> (Maybe Messages.Speed, [ThinkingAdjustment])
+ planSpeed compat = \case
+   Nothing -> (Nothing, [])
+-  Just SpeedStandard -> (Just Messages.SpeedStandard, [])
++  Just SpeedStandard -> (Just Messages.Standard, [])
+   Just SpeedFast
+-    | compat ^. #supportsFastMode -> (Just Messages.SpeedFast, [])
++    | compat ^. #supportsFastMode -> (Just Messages.Fast, [])
+     | otherwise -> (Nothing, [FastModeDroppedUnsupportedModel])
+diff --git a/baikai-claude/src/Baikai/Provider/Claude/Internal/Stream.hs b/baikai-claude/src/Baikai/Provider/Claude/Internal/Stream.hs
+index 25c60ae..febf0c4 100644
+--- a/baikai-claude/src/Baikai/Provider/Claude/Internal/Stream.hs
++++ b/baikai-claude/src/Baikai/Provider/Claude/Internal/Stream.hs
+@@ -9,11 +9,11 @@
+ --
+ -- The Anthropic Messages streaming machinery: the SSE driver seam, the
+ -- event assembler and the translator that turns the SDK's typed
+--- 'Claude.V1.Messages.MessageStreamEvent' values into baikai
++-- 'Claude.Streaming.StreamPayload' values into baikai
+ -- 'AssistantMessageEvent' values. The public entry points built on it
+ -- live in "Baikai.Provider.Claude.Api".
+ --
+--- Requests start as the SDK's typed 'Claude.V1.Messages.CreateMessage'
++-- Requests start as the SDK's typed 'Claude.Messages.MessageRequest'
+ -- value, then 'Baikai.Provider.Claude.Shape.streamRequestBody' patches
+ -- the raw JSON body for tool-schema, @tool_choice@, and tool-cache
+ -- compat before
+@@ -38,10 +38,11 @@ import Baikai.Cost.Pricing qualified as Pricing
+ import Baikai.Error (BaikaiError, contentFiltered, invalidRequest, providerError)
+ import Baikai.Evidence qualified as Ev
+ import Baikai.Evidence.Build qualified as Build
++import Baikai.Http (canonicalBaseUrl)
+ import Baikai.Message qualified as Msg
+ import Baikai.Model (Model, anthropicMessagesCompatFor)
+ import Baikai.Options (Options (..))
+-import Baikai.Provider.Claude.Internal.ErrorClass (classifyErrorValue, classifyException)
++import Baikai.Provider.Claude.Internal.ErrorClass (classifyException)
+ import Baikai.Provider.Claude.Internal.Request (describeThinkingFor, mapRequest)
+ import Baikai.Provider.Claude.Shape (streamRequestBody)
+ import Baikai.Provider.Claude.Sse (claudeSseStreamValueWithHeaders)
+@@ -69,14 +70,14 @@ import Baikai.Stream.Event
+ import Baikai.Url qualified as Url
+ import Baikai.Usage qualified as Usage
+ import Baikai.Usage.Normalize qualified as Normalize
+-import Claude.V1.Messages qualified as Messages
++import Claude.Messages qualified as Messages
++import Claude.Streaming qualified as Messages
+ import Control.Applicative ((<|>))
+ import Control.Exception (SomeAsyncException (..), SomeException, fromException, throwIO, try)
+ import Control.Lens ((%~), (&), (.~), (^.))
+ import Data.Aeson (Value)
+ import Data.Aeson qualified as Aeson
+ import Data.Aeson.KeyMap qualified as KeyMap
+-import Data.ByteString.Lazy qualified as BSL
+ import Data.CaseInsensitive qualified as CI
+ import Data.Generics.Labels ()
+ import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+@@ -109,7 +110,7 @@ import Streamly.Data.Stream qualified as Stream
+ type SseDriver =
+   ClaudeCall ->
+   (Sse.ResponseMetadata -> IO ()) ->
+-  (Either BaikaiError Messages.MessageStreamEvent -> IO ()) ->
++  (Either BaikaiError Messages.StreamPayload -> IO ()) ->
+   IO ()
+
+ -- | The production driver: a real HTTPS request through the cached
+@@ -117,7 +118,7 @@ type SseDriver =
+ liveSseDriver :: SseDriver
+ liveSseDriver call =
+   claudeSseStreamValueWithHeaders
+-    (call ^. #clientEnv)
++    (call ^. #transportBase)
+     (call ^. #requestHeaders)
+     (call ^. #requestBody)
+
+@@ -132,7 +133,7 @@ claudeMessagesStreamWith driver m ctx opts =
+     case setup of
+       Left err -> Stream.fromList <$> immediateError m opts err
+       Right call -> do
+-        q <- newFrameQueue :: IO (FrameQueue (Either BaikaiError Messages.MessageStreamEvent))
++        q <- newFrameQueue :: IO (FrameQueue (Either BaikaiError Messages.StreamPayload))
+         tref <- newIORef False
+         mref <- newIORef Nothing
+         startTime <- getCurrentTime
+@@ -142,7 +143,7 @@ claudeMessagesStreamWith driver m ctx opts =
+         -- separately by 'Transport.requestHeaders'.
+         mkEvidence <-
+           Build.prepareEvidenceAt
+-            (Text.pack (Client.showBaseUrl (Client.baseUrl (call ^. #clientEnv))) <> "/v1/messages")
++            (Text.pack (Client.showBaseUrl (call ^. #transportBase)) <> "/v1/messages")
+             m
+             opts
+             Ev.TransportHttpApi
+@@ -181,7 +182,7 @@ claudeMessagesStreamWith driver m ctx opts =
+ -- | Per-call prepared values, including the shaped JSON request body
+ -- passed to the local streaming transport.
+ data ClaudeCall = ClaudeCall
+-  { clientEnv :: !Client.ClientEnv,
++  { transportBase :: !Client.BaseUrl,
+     requestHeaders :: !RequestHeaders,
+     timeoutMs :: !(Maybe Int),
+     requestBody :: !Aeson.Value,
+@@ -226,22 +227,23 @@ prepareCall m ctx opts
+           case Url.baseUrlProblem url of
+             Just problem ->
+               pure (Left (invalidRequest ("Model.baseUrl is not usable: " <> problem)))
+-            Nothing -> do
+-              key <- Transport.resolveKey url opts
+-              env <- Transport.getClientEnvCached url
+-              let body = streamRequestBody compat ctx opts req
+-                  headers = Transport.requestHeaders key version compat ctx m opts
+-              pure
+-                ( Right
+-                    ClaudeCall
+-                      { clientEnv = env,
+-                        requestHeaders = headers,
+-                        timeoutMs = opts ^. #timeoutMs,
+-                        requestBody = body,
+-                        baseUrl = url,
+-                        thinking = translation
+-                      }
+-                )
++            Nothing -> case canonicalBaseUrl url of
++              Left problem -> pure (Left (invalidRequest problem))
++              Right transportUrl -> do
++                key <- Transport.resolveKey url opts
++                let body = streamRequestBody compat ctx opts req
++                    headers = Transport.requestHeaders key version compat ctx m opts
++                pure
++                  ( Right
++                      ClaudeCall
++                        { transportBase = transportUrl,
++                          requestHeaders = headers,
++                          timeoutMs = opts ^. #timeoutMs,
++                          requestBody = body,
++                          baseUrl = url,
++                          thinking = translation
++                        }
++                  )
+
+ -- | Worker body: drive the SDK's typed callback, forwarding events onto
+ -- the frame queue. Any synchronous exception is converted into a
+@@ -257,7 +259,7 @@ worker ::
+   SseDriver ->
+   ClaudeCall ->
+   IORef (Maybe Sse.ResponseMetadata) ->
+-  FrameQueue (Either BaikaiError Messages.MessageStreamEvent) ->
++  FrameQueue (Either BaikaiError Messages.StreamPayload) ->
+   IO ()
+ worker driver call metaRef q = do
+   r <-
+@@ -274,7 +276,7 @@ worker driver call metaRef q = do
+
+ -- | The streaming 'Stream' state.
+ data ProducerState = ProducerState
+-  { chan :: !(FrameQueue (Either BaikaiError Messages.MessageStreamEvent)),
++  { chan :: !(FrameQueue (Either BaikaiError Messages.StreamPayload)),
+     pending :: ![AssistantMessageEvent],
+     assembler :: !Assembler,
+     finished :: !Bool,
+@@ -630,7 +632,7 @@ emptyAssembler m s =
+     }
+
+ translate ::
+-  Either BaikaiError Messages.MessageStreamEvent ->
++  Either BaikaiError Messages.StreamPayload ->
+   Assembler ->
+   UTCTime ->
+   ([AssistantMessageEvent], Assembler)
+@@ -645,7 +647,7 @@ translate raw ass now = case raw of
+   Right ev -> translateEvent ev ass now
+
+ translateEvent ::
+-  Messages.MessageStreamEvent ->
++  Messages.StreamPayload ->
+   Assembler ->
+   UTCTime ->
+   ([AssistantMessageEvent], Assembler)
+@@ -656,7 +658,7 @@ translateEvent raw ass now = case raw of
+   -- failure arriving before this frame — a 401, a rate limit, an
+   -- in-band error event, an EOF — still begins the stream the way the
+   -- protocol says every stream begins.
+-  Messages.Message_Start {Messages.message = mr} ->
++  Messages.MessageStart mr ->
+     let usage0 = anthroUsageToBaikai (mr ^. #usage)
+         ass' =
+           ass
+@@ -669,46 +671,42 @@ translateEvent raw ass now = case raw of
+             & #usage .~ usage0
+             & #usageReported .~ True
+      in ([], ass')
+-  Messages.Content_Block_Start {Messages.index = idx, Messages.content_block = block} ->
++  Messages.ContentBlockStart idx block ->
+     handleBlockStart (fromIntegral idx) block ass
+-  Messages.Content_Block_Delta {Messages.index = idx, Messages.delta = d} ->
++  Messages.ContentBlockDelta idx d ->
+     handleBlockDelta (fromIntegral idx) d ass
+-  Messages.Content_Block_Stop {Messages.index = idx} ->
++  Messages.ContentBlockStop idx ->
+     handleBlockStop (fromIntegral idx) ass
+-  Messages.Message_Delta {Messages.message_delta = md, Messages.usage = su} ->
+-    let stopR = mapStopReason (md ^. #stop_reason)
++  Messages.MessageDelta md su ->
++    let stopR = mapStopReason (md ^. #stopReason)
+         u = ass ^. #usage
+         -- @message_delta@ carries the call's final counts. Older models
+         -- send only @output_tokens@; Claude 5 repeats the prompt-side
+         -- classes too, which matters because a server-side tool run
+         -- grows them after @message_start@. An absent field keeps what
+         -- @message_start@ reported rather than zeroing it.
+-        --
+-        -- 'Messages.StreamUsage' has no 'GHC.Generics.Generic' instance,
+-        -- so these are record dots rather than the generic-lens labels
+-        -- used for 'Messages.Usage'.
+         known category getter = case u ^. #availability of
+           Just facts | category `Set.notMember` Usage.missingCategories facts -> Just (getter u)
+           _ -> Nothing
+         u' =
+-          Usage.observeBilling (maybe [] (Set.toList . Usage.billingFacts) (u ^. #availability) <> toolBilling su.stream_server_tool_use) $
++          Usage.observeBilling (maybe [] (Set.toList . Usage.billingFacts) (u ^. #availability) <> usageBilling (su ^. #usageEvidence)) $
+             Normalize.normalizeUsage
+               Normalize.ExclusiveInput
+               ( Normalize.ReportedUsage
+-                  (su.stream_input_tokens <|> known Usage.InputUsage Usage.inputTokens)
+-                  (Just su.output_tokens)
+-                  (su.stream_cache_read_input_tokens <|> known Usage.CacheReadUsage Usage.cacheReadTokens)
+-                  (su.stream_cache_creation_input_tokens <|> known Usage.CacheWriteUsage Usage.cacheWriteTokens)
+-                  ((Messages.thinking_tokens <$> su.stream_output_tokens_details) <|> (u ^. #reasoningTokens))
++                  ((su ^. #inputTokens) <|> known Usage.InputUsage Usage.inputTokens)
++                  ((su ^. #outputTokens) <|> known Usage.OutputUsage Usage.outputTokens)
++                  ((su ^. #cacheReadInputTokens) <|> known Usage.CacheReadUsage Usage.cacheReadTokens)
++                  ((su ^. #cacheCreationInputTokens) <|> known Usage.CacheWriteUsage Usage.cacheWriteTokens)
++                  (((su ^. #usageEvidence . #outputTokensDetails) >>= Messages.thinkingTokens) <|> (u ^. #reasoningTokens))
+               )
+-     in ([], ass & #stopReason .~ stopR & #stopDetails .~ (md ^. #stop_details) & #usage .~ u' & #usageReported .~ True)
+-  Messages.Message_Stop ->
++     in ([], ass & #stopReason .~ stopR & #stopDetails .~ (md ^. #stopDetails) & #usage .~ u' & #usageReported .~ True)
++  Messages.MessageStop ->
+     let reason = ass ^. #stopReason
+         -- A refusal is a filter: the content, not the transport, is
+         -- the problem, and a caller can branch on the category.
+         details = ass ^. #stopDetails
+-        refusalCategory = details >>= (\d -> d.category)
+-        explanation = details >>= (\d -> d.explanation)
++        refusalCategory = details >>= \case Messages.RefusalDetails category _ _ -> category; _ -> Nothing
++        explanation = details >>= \case Messages.RefusalDetails _ detail _ -> detail; _ -> Nothing
+         refusal =
+           contentFiltered
+             ( "Anthropic refused to generate a response (stop_reason=refusal)"
+@@ -725,66 +723,58 @@ translateEvent raw ass now = case raw of
+             then EventError (errorTerminal Nothing (ass ^. #responseId) reason msg refusal)
+             else EventDone (doneTerminal Nothing (ass ^. #responseId) reason msg)
+      in ([terminalEvent], ass)
+-  Messages.Error {Messages.error = errVal} ->
+-    let (closeEvents, ass') = closeOpenBlocks ass
+-        errText = renderAnthropicError errVal
+-        mErr = classifyErrorValue errVal
+-        msg = finalMessageOnError ass' now errText
+-        errInfo = fromMaybe (providerError errText) mErr
+-     in ( closeEvents
+-            <> [EventError (errorTerminal Nothing (ass' ^. #responseId) Stop.ErrorReason msg errInfo)],
+-          ass'
+-        )
++  Messages.UnknownEvent _ -> ([], ass)
+
+ handleBlockStart ::
+   Int ->
+-  Messages.ContentBlock ->
++  Messages.OutputBlock ->
+   Assembler ->
+   ([AssistantMessageEvent], Assembler)
+-handleBlockStart i block ass = case block of
+-  Messages.ContentBlock_Text {} ->
++handleBlockStart i block ass = case Messages.blockContent block of
++  Messages.OutputText {} ->
+     ( [TextStart IndexPayload {contentIndex = i}],
+       ass & #textBuf %~ IntMap.insert i Text.empty
+     )
+-  Messages.ContentBlock_Thinking {} ->
++  Messages.OutputThinking {} ->
+     ( [ThinkingStart IndexPayload {contentIndex = i}],
+       ass & #thinkBuf %~ IntMap.insert i Text.empty
+     )
+-  Messages.ContentBlock_Redacted_Thinking {Messages.data_ = payload} ->
++  Messages.RedactedThinking payload ->
+     ( [ThinkingStart IndexPayload {contentIndex = i}],
+       ass & #redactedBuf %~ IntMap.insert i payload
+     )
+-  Messages.ContentBlock_Tool_Use {Messages.id = tid, Messages.name = tn} ->
+-    ( [ToolCallStart IndexPayload {contentIndex = i}],
+-      ass
+-        & #toolArgsBuf %~ IntMap.insert i Text.empty
+-        & #toolMeta %~ IntMap.insert i (tid, tn)
+-    )
+-  _ ->
+-    -- Server-tool, code-execution-tool, unknown — pass-through with no events.
+-    ([], ass)
++  Messages.OutputToolUse tid tn _ -> startTool tid tn
++  Messages.OutputToolUseWithCaller tid tn _ _ -> startTool tid tn
++  _ -> ([], ass)
++  where
++    startTool tid tn =
++      ( [ToolCallStart IndexPayload {contentIndex = i}],
++        ass
++          & #toolArgsBuf %~ IntMap.insert i Text.empty
++          & #toolMeta %~ IntMap.insert i (tid, tn)
++      )
+
+ handleBlockDelta ::
+   Int ->
+-  Messages.ContentBlockDelta ->
++  Messages.BlockDelta ->
+   Assembler ->
+   ([AssistantMessageEvent], Assembler)
+ handleBlockDelta i d ass = case d of
+-  Messages.Delta_Text_Delta {Messages.text = t} ->
++  Messages.TextDelta t ->
+     if IntMap.member i (ass ^. #textBuf)
+       then
+         ( [TextDelta DeltaPayload {contentIndex = i, delta = t}],
+           ass & #textBuf %~ IntMap.adjust (<> t) i
+         )
+       else ([], ass)
+-  Messages.Delta_Thinking_Delta {Messages.thinking = t} ->
++  Messages.ThinkingDelta t ->
+     if IntMap.member i (ass ^. #thinkBuf)
+       then
+         ( [ThinkingDelta DeltaPayload {contentIndex = i, delta = t}],
+           ass & #thinkBuf %~ IntMap.adjust (<> t) i
+         )
+       else ([], ass)
+-  Messages.Delta_Signature_Delta {Messages.signature = sig} ->
++  Messages.SignatureDelta sig ->
+     -- Signatures are tail-end metadata on thinking blocks; they
+     -- attach to the ThinkingEnd event's content build, not a public
+     -- delta event.
+@@ -794,13 +784,14 @@ handleBlockDelta i d ass = case d of
+           ass & #thinkSig %~ IntMap.insertWith (\new old -> old <> new) i sig
+         )
+       else ([], ass)
+-  Messages.Delta_Input_Json_Delta {Messages.partial_json = j} ->
++  Messages.InputJsonDelta j ->
+     if IntMap.member i (ass ^. #toolArgsBuf)
+       then
+         ( [ToolCallDelta DeltaPayload {contentIndex = i, delta = j}],
+           ass & #toolArgsBuf %~ IntMap.adjust (<> j) i
+         )
+       else ([], ass)
++  _ -> ([], ass)
+
+ handleBlockStop ::
+   Int -> Assembler -> ([AssistantMessageEvent], Assembler)
+@@ -991,11 +982,6 @@ trySync action = do
+ exceptionToError :: SomeException -> BaikaiError
+ exceptionToError e = fromMaybe (classifyException e) (fromException e)
+
+-renderAnthropicError :: Value -> Text
+-renderAnthropicError v = case v of
+-  Aeson.String t -> t
+-  _ -> Text.decodeUtf8 (BSL.toStrict (Aeson.encode v))
+-
+ -- | Map the Anthropic streaming 'Message_Start.message.usage' value
+ -- into baikai's 'Usage' shape. Cache-related counters are populated
+ -- where present; cost is left at zero (the terminal event
+@@ -1008,33 +994,44 @@ renderAnthropicError v = case v of
+ -- calculation uses the duration selected by the actual shaped request body.
+ anthroUsageToBaikai :: Messages.Usage -> Usage.Usage
+ anthroUsageToBaikai u =
+-  Usage.observeBilling ([Usage.BillingServiceTier tier | Just tier <- [u ^. #service_tier]] <> [Usage.BillingSpeed speed | Just value <- [u ^. #speed], Aeson.String speed <- [Aeson.toJSON value]] <> toolBilling (u ^. #server_tool_use)) $
++  Usage.observeBilling (usageBilling (u ^. #usageEvidence)) $
+     Normalize.normalizeUsage
+       Normalize.ExclusiveInput
+       ( Normalize.ReportedUsage
+-          (Just (u ^. #input_tokens))
+-          (Just (u ^. #output_tokens))
+-          (u ^. #cache_read_input_tokens)
+-          (u ^. #cache_creation_input_tokens)
+-          (fmap (^. #thinking_tokens) (u ^. #output_tokens_details))
++          (Just (u ^. #inputTokens))
++          (Just (u ^. #outputTokens))
++          (u ^. #cacheReadInputTokens)
++          (u ^. #cacheCreationInputTokens)
++          ((u ^. #usageEvidence . #outputTokensDetails) >>= Messages.thinkingTokens)
+       )
+
+--- Server-side tool products are outside the token-rate calculation.
+-toolBilling :: Maybe Messages.ServerToolUseUsage -> [Usage.BillingFact]
+-toolBilling Nothing = []
+-toolBilling (Just usage) = [Usage.BillingServerToolUse | fromMaybe 0 (usage ^. #web_search_requests) + fromMaybe 0 (usage ^. #tool_search_requests) > 0]
++usageBilling :: Messages.UsageEvidence -> [Usage.BillingFact]
++usageBilling evidence =
++  [Usage.BillingServiceTier tier | Just tier <- [evidence ^. #serviceTier]]
++    <> [Usage.BillingSpeed speed | Just value <- [evidence ^. #observedSpeed], Aeson.String speed <- [Aeson.toJSON value]]
++    <> [Usage.BillingServerToolUse | Just counts <- [evidence ^. #serverToolCounts], hasServerTools counts]
++  where
++    hasServerTools counts =
++      any
++        (maybe False (> 0))
++        [ counts ^. #webSearchRequests,
++          counts ^. #toolSearchRequests,
++          counts ^. #webFetchRequests,
++          counts ^. #codeExecutionRequests
++        ]
+
+ mapStopReason :: Maybe Messages.StopReason -> Stop.StopReason
+ mapStopReason = \case
+-  Just Messages.End_Turn -> Stop.Stop
+-  Just Messages.Max_Tokens -> Stop.Length
+-  Just Messages.Stop_Sequence -> Stop.Stop
+-  Just Messages.Tool_Use -> Stop.ToolUse
++  Just Messages.EndTurn -> Stop.Stop
++  Just Messages.MaxTokensReached -> Stop.Length
++  Just Messages.StopSequence -> Stop.Stop
++  Just Messages.ToolUse -> Stop.ToolUse
+   -- The turn was suspended mid-flight (a long-running server-side tool)
+   -- and Anthropic expects the caller to send the message back to
+   -- continue it. Nothing failed, so this is a stop, not an error;
+   -- baikai's 'Stop.StopReason' has no constructor that says "resume me".
+-  Just Messages.Pause_Turn -> Stop.Stop
++  Just Messages.PauseTurn -> Stop.Stop
+   Just Messages.Refusal -> Stop.ErrorReason
+-  Just Messages.Model_Context_Window_Exceeded -> Stop.Length
++  Just Messages.ModelContextWindowExceeded -> Stop.Length
++  Just (Messages.UnknownStopReason _) -> Stop.Stop
+   Nothing -> Stop.Stop
+diff --git a/baikai-claude/src/Baikai/Provider/Claude/Shape.hs b/baikai-claude/src/Baikai/Provider/Claude/Shape.hs
+index 69d9ade..dd371ba 100644
+--- a/baikai-claude/src/Baikai/Provider/Claude/Shape.hs
++++ b/baikai-claude/src/Baikai/Provider/Claude/Shape.hs
+@@ -21,7 +21,7 @@ import Baikai.Compat (AnthropicMessagesCompat (supportsCacheControlOnTools, supp
+ import Baikai.Context (Context, tools)
+ import Baikai.Options (Options, cacheRetention, toolChoice)
+ import Baikai.Tool qualified as Tool
+-import Claude.V1.Messages qualified as Messages
++import Claude.Messages qualified as Messages
+ import Data.Aeson (Value (..), (.=))
+ import Data.Aeson qualified as Aeson
+ import Data.Aeson.Key qualified as AesonKey
+@@ -46,10 +46,10 @@ streamRequestBody ::
+   AnthropicMessagesCompat ->
+   Context ->
+   Options ->
+-  Messages.CreateMessage ->
++  Messages.MessageRequest ->
+   Aeson.Value
+ streamRequestBody compat ctx opts req =
+-  shapeRequestBody compat ctx opts (Aeson.toJSON req {Messages.stream = Just True})
++  mapObject (KeyMap.insert "stream" (Bool True)) (shapeRequestBody compat ctx opts (Aeson.toJSON req))
+
+ replaceToolSchemas :: Context -> Aeson.Value -> Aeson.Value
+ replaceToolSchemas ctx
+diff --git a/baikai-claude/src/Baikai/Provider/Claude/Sse.hs b/baikai-claude/src/Baikai/Provider/Claude/Sse.hs
+index 9a4160e..488030d 100644
+--- a/baikai-claude/src/Baikai/Provider/Claude/Sse.hs
++++ b/baikai-claude/src/Baikai/Provider/Claude/Sse.hs
+@@ -5,34 +5,31 @@
+ -- sibling packages can reuse its pieces; it is not part of the public
+ -- API and may change in /any/ release without a PVP major bump.
+ --
+--- Local SSE transport for Anthropic Messages streams.
+---
+--- The upstream @claude@ SDK exposes the right event decoder, but its
+--- non-2xx path collapses status, headers, and body into plain text. This
+--- wrapper keeps the SDK's request and SSE parsing shape while surfacing
+--- classified 'BaikaiError' values.
++-- Adapt the Claude client stream and its response metadata to Baikai's
++-- provider error contract.
+ module Baikai.Provider.Claude.Sse
+   ( claudeSseStream,
+     claudeSseStreamValue,
+     claudeSseStreamValueWithHeaders,
+     sseFromResponse,
+     decodeFrame,
+-    buildRequest,
+     ResponseMetadata (..),
+     capturedHeaderNames,
+   )
+ where
+
+-import Baikai.Error (BaikaiError, decodeError, httpError, parseHttpDate, retryAfterSecondsAt)
+-import Claude.V1.Messages qualified as Messages
+-import Control.Monad (foldM, when)
++import Baikai.Error (BaikaiError, ErrorCategory (TransientError), decodeError, httpError, invalidRequest, parseHttpDate, providerError, retryAfterSecondsAt)
++import Baikai.Error qualified as Error
++import Baikai.Provider.Claude.Internal.ErrorClass (classifyErrorValue)
++import Claude.Client qualified as Candidate
++import Claude.Messages (MessageRequest)
++import Claude.Streaming qualified as Candidate
++import Control.Monad (when)
+ import Data.Aeson qualified as Aeson
+-import Data.Aeson.KeyMap qualified as Aeson.Key
+ import Data.ByteString qualified as SBS
+ import Data.ByteString.Char8 qualified as S8
+ import Data.CaseInsensitive (CI)
+ import Data.CaseInsensitive qualified as CI
+-import Data.Char (isSpace)
+ import Data.IORef qualified as IORef
+ import Data.Maybe (fromMaybe)
+ import Data.Text (Text)
+@@ -45,6 +42,7 @@ import Network.HTTP.Client qualified as HTTP
+ import Network.HTTP.Types.Header (RequestHeaders)
+ import Network.HTTP.Types.Status qualified as Status
+ import Servant.Client qualified as Client
++import System.IO.Unsafe (unsafePerformIO)
+
+ -- | Response-level metadata captured once, before the first event.
+ --
+@@ -95,23 +93,23 @@ responseMetadata response =
+ -- once per SSE event — potentially thousands of times per call — and
+ -- response-level data does not belong on that hot path.
+ claudeSseStream ::
+-  Client.ClientEnv ->
++  Client.BaseUrl ->
+   Text ->
+   Maybe Text ->
+-  Messages.CreateMessage ->
++  MessageRequest ->
+   (ResponseMetadata -> IO ()) ->
+-  (Either BaikaiError Messages.MessageStreamEvent -> IO ()) ->
++  (Either BaikaiError Candidate.StreamPayload -> IO ()) ->
+   IO ()
+ claudeSseStream env apiKey anthropicVersion req =
+-  claudeSseStreamValue env apiKey anthropicVersion (Aeson.toJSON req {Messages.stream = Just True})
++  claudeSseStreamValue env apiKey anthropicVersion (Aeson.toJSON req)
+
+ claudeSseStreamValue ::
+-  Client.ClientEnv ->
++  Client.BaseUrl ->
+   Text ->
+   Maybe Text ->
+   Aeson.Value ->
+   (ResponseMetadata -> IO ()) ->
+-  (Either BaikaiError Messages.MessageStreamEvent -> IO ()) ->
++  (Either BaikaiError Candidate.StreamPayload -> IO ()) ->
+   IO ()
+ claudeSseStreamValue env apiKey anthropicVersion =
+   claudeSseStreamValueWithHeaders env requestHeaders
+@@ -127,51 +125,83 @@ claudeSseStreamValue env apiKey anthropicVersion =
+         ]
+
+ claudeSseStreamValueWithHeaders ::
+-  Client.ClientEnv ->
++  Client.BaseUrl ->
+   RequestHeaders ->
+   Aeson.Value ->
+   (ResponseMetadata -> IO ()) ->
+-  (Either BaikaiError Messages.MessageStreamEvent -> IO ()) ->
++  (Either BaikaiError Candidate.StreamPayload -> IO ()) ->
+   IO ()
+ claudeSseStreamValueWithHeaders env requestHeaders requestBody onMetadata onEvent = do
+-  HTTP.withResponse (buildRequest (Client.baseUrl env) requestHeaders requestBody) (Client.manager env) $ \response ->
+-    sseFromResponse response onMetadata onEvent
++  let config =
++        (Candidate.defaultClientConfig (fromMaybe "" (lookup "x-api-key" requestHeaders)))
++          { Candidate.endpoint = Client.showBaseUrl env,
++            Candidate.apiVersion = lookup "anthropic-version" requestHeaders,
++            Candidate.timeoutMicros = Nothing
++          }
++      options =
++        Candidate.RequestOptions
++          (maybe [] (S8.split ',') (lookup "anthropic-beta" requestHeaders))
++          (filter ((`notElem` ["x-api-key", "anthropic-version", "anthropic-beta", "accept", "content-type"]) . fst) requestHeaders)
++  created <- Candidate.newClientWithPool candidatePool config
++  sentMetadata <- IORef.newIORef False
++  let publish meta = do
++        alreadySent <- IORef.atomicModifyIORef' sentMetadata (\sent -> (True, sent))
++        when (not alreadySent) (onMetadata (candidateMetadata meta))
++  case created of
++    Left err -> onEvent (Left (candidateError err))
++    Right client -> do
++      result <- Candidate.streamMessageValue client options requestBody $ \meta event -> do
++        publish meta
++        forwardPayload onEvent (Candidate.eventPayload event)
++        pure Candidate.Continue
++      case result of
++        Right response -> publish (Candidate.metadata response)
++        Left (Candidate.ApiStatusError meta _ detail) -> do
++          publish meta
++          now <- getCurrentTime
++          let reference = fromMaybe now (parseHttpDate . decodeLenient =<< Candidate.responseDate meta)
++              retryAfter = retryAfterSecondsAt reference . decodeLenient =<< Candidate.retryAfter meta
++          onEvent (Left (httpError (Candidate.status meta) retryAfter detail))
++        Left err -> do
++          mapM_ publish (failureMetadata err)
++          onEvent (Left (candidateError err))
+
+--- | The exact request this transport sends.
+---
+--- Pure and exported so that what goes on the wire — the method, the
+--- composed path, and the redirect policy — is assertable without opening
+--- a connection.
+---
+--- The path is the base URL's path plus @/v1/messages@. The base URL
+--- reaching here has already been through
+--- 'Baikai.Http.canonicalBaseUrl', which strips a trailing @\/v1@
+--- segment, so a caller who writes the base URL the way every OpenAI SDK
+--- teaches it — @https:\/\/api.deepseek.com\/v1@ — gets one @\/v1@ here
+--- rather than two.
+-buildRequest :: Client.BaseUrl -> RequestHeaders -> Aeson.Value -> HTTP.Request
+-buildRequest base requestHeaders requestBody =
+-  HTTP.defaultRequest
+-    { HTTP.secure = case Client.baseUrlScheme base of
+-        Client.Http -> False
+-        Client.Https -> True,
+-      HTTP.host = S8.pack (Client.baseUrlHost base),
+-      HTTP.port = Client.baseUrlPort base,
+-      HTTP.method = "POST",
+-      HTTP.path = S8.pack (normalizePath (Client.baseUrlPath base) <> "/v1/messages"),
+-      HTTP.requestHeaders = requestHeaders,
+-      HTTP.requestBody = HTTP.RequestBodyLBS (Aeson.encode requestBody),
+-      -- This POST has no legitimate redirect, and http-client's default
+-      -- is to follow up to ten of them with every header intact — which
+-      -- would re-send the credential to whatever host a Location names.
+-      -- At zero the 3xx comes back untouched and 'sseFromResponse'
+-      -- delivers it as the one in-band terminal error, carrying its
+-      -- status.
+-      HTTP.redirectCount = 0,
+-      -- No per-response bound here: Options.timeoutMs is enforced around
+-      -- the whole call by Transport.runWithTimeout.
+-      HTTP.responseTimeout = HTTP.responseTimeoutNone
+-    }
++{-# NOINLINE candidatePool #-}
++candidatePool :: Candidate.ClientPool
++candidatePool = unsafePerformIO Candidate.newClientPool
++
++candidateMetadata :: Candidate.ResponseMetadata -> ResponseMetadata
++candidateMetadata meta =
++  ResponseMetadata (Candidate.status meta) $
++    [ (name, decodeLenient header)
++    | (name, Just header) <-
++        [ ("request-id", Candidate.requestId meta),
++          ("x-request-id", Candidate.gatewayRequestId meta),
++          ("cf-ray", Candidate.cloudflareRay meta)
++        ]
++    ]
++
++failureMetadata :: Candidate.ClientError -> Maybe Candidate.ResponseMetadata
++failureMetadata = \case
++  Candidate.TransportError meta _ -> meta
++  Candidate.DecodeError meta _ -> Just meta
++  Candidate.StreamApiError meta _ -> Just meta
++  _ -> Nothing
++
++candidateError :: Candidate.ClientError -> BaikaiError
++candidateError = \case
++  Candidate.InvalidRequest detail -> invalidRequest detail
++  Candidate.DecodeError _ "Stream ended before message_stop" -> providerError "claude stream ended without message_stop"
++  Candidate.DecodeError _ detail -> decodeError detail
++  Candidate.StreamApiError _ err -> classifyProviderError err
++  Candidate.TransportError _ kind -> (providerError (Text.pack (show kind))) {Error.category = TransientError}
++  err -> decodeError (Text.pack (show err))
++
++classifyProviderError :: Candidate.ApiError -> BaikaiError
++classifyProviderError err =
++  let detail = Candidate.message err
++      body = Aeson.object ["type" Aeson..= Candidate.errorType err, "message" Aeson..= detail]
++   in fromMaybe (providerError detail) (classifyErrorValue body)
+
+ -- | Consume an @http-client@ response as an Anthropic SSE stream.
+ --
+@@ -182,7 +212,7 @@ buildRequest base requestHeaders requestBody =
+ sseFromResponse ::
+   HTTP.Response HTTP.BodyReader ->
+   (ResponseMetadata -> IO ()) ->
+-  (Either BaikaiError Messages.MessageStreamEvent -> IO ()) ->
++  (Either BaikaiError Candidate.StreamPayload -> IO ()) ->
+   IO ()
+ sseFromResponse response onMetadata onEvent = do
+   let st = HTTP.responseStatus response
+@@ -201,126 +231,40 @@ sseFromResponse response onMetadata onEvent = do
+           retryAfter = retryAfterSecondsAt reference =<< headerText "Retry-After"
+       onEvent (Left (httpError (Status.statusCode st) retryAfter bodyText))
+     else do
+-      lineBufRef <- IORef.newIORef SBS.empty
+-      eventBufRef <- IORef.newIORef ([] :: [SBS.ByteString])
+-      let flushEvent = do
+-            es <- IORef.atomicModifyIORef' eventBufRef (\buf -> ([], reverse buf))
+-            case es of
+-              [] -> pure False
+-              _ -> do
+-                let payload = S8.dropWhileEnd isSpace (S8.concat es)
+-                if SBS.null payload
+-                  then -- An empty @data:@ line is a heartbeat, not a frame.
+-                    pure False
+-                  else case decodeFrame payload of
+-                    Left e -> onEvent (Left e) >> pure False
+-                    Right Nothing -> pure False
+-                    Right (Just ev) -> onEvent (Right ev) >> pure False
++      let header name = lookup name (HTTP.responseHeaders response)
++          metadata =
++            Candidate.ResponseMetadata
++              { Candidate.requestId = header "request-id",
++                Candidate.gatewayRequestId = header "x-request-id",
++                Candidate.cloudflareRay = header "cf-ray",
++                Candidate.status = Status.statusCode st,
++                Candidate.retryAfter = header "retry-after",
++                Candidate.responseDate = header "date"
++              }
++      result <- Candidate.consumeEventStream metadata (HTTP.brRead (HTTP.responseBody response)) $ \event -> do
++        forwardPayload onEvent (Candidate.eventPayload event)
++        pure Candidate.Continue
++      case result of
++        Left err -> onEvent (Left (candidateError err))
++        Right _ -> pure ()
+
+-          handleLine line =
+-            let l = stripCR line
+-             in if S8.null l
+-                  then flushEvent
+-                  else
+-                    if "data:" `S8.isPrefixOf` l
+-                      then do
+-                        let d = S8.dropWhile (== ' ') (S8.drop 5 l)
+-                        IORef.modifyIORef' eventBufRef (d :)
+-                        pure False
+-                      else pure False
++-- | Decode an individual recorded frame with the client codec.
++decodeFrame :: SBS.ByteString -> Either BaikaiError (Maybe Candidate.StreamPayload)
++decodeFrame payload = do
++  raw <- either (Left . decodeError . Text.pack) Right (Aeson.eitherDecodeStrict payload)
++  parsed <- either (Left . decodeError . Text.pack) Right (Candidate.decodeStreamEvent raw)
++  case parsed of
++    Left err -> Left (classifyProviderError err)
++    Right event -> pure (knownPayload (Candidate.eventPayload event))
+
+-          loop = do
+-            chunk <- HTTP.brRead (HTTP.responseBody response)
+-            if SBS.null chunk
+-              then do
+-                pendingLine <- IORef.readIORef lineBufRef
+-                when (not (SBS.null pendingLine)) $ do
+-                  _ <- handleLine pendingLine
+-                  IORef.writeIORef lineBufRef SBS.empty
+-                _ <- flushEvent
+-                pure ()
+-              else do
+-                prev <- IORef.readIORef lineBufRef
+-                let combined = prev <> chunk
+-                    ls = S8.split '\n' combined
+-                case unsnoc ls of
+-                  Nothing -> loop
+-                  Just (completeLines, lastLine) -> do
+-                    IORef.writeIORef lineBufRef lastLine
+-                    stop <- foldM (\acc ln -> if acc then pure True else handleLine ln) False completeLines
+-                    if stop then pure () else loop
+-      loop
++forwardPayload :: (Either BaikaiError Candidate.StreamPayload -> IO ()) -> Candidate.StreamPayload -> IO ()
++forwardPayload send = mapM_ (send . Right) . knownPayload
+
+--- | Decode one SSE frame.
+---
+--- @Right Nothing@ is a frame this transport deliberately skips: an event
+--- @type@, or a @content_block_delta@ whose @delta.type@, that the SDK
+--- has no constructor for. The SDK decodes both with aeson's tagged-object
+--- encoding and no unknown-tag fallback, so an unrecognised tag is a
+--- decode /failure/ there — and a new frame type from Anthropic must not
+--- end an otherwise healthy stream. A frame of a __known__ type that
+--- still fails to decode is a genuine fault and stays a 'decodeError'.
+---
+--- Both tag lists are copied from the SDK's @constructorTagModifier@
+--- tables in @Claude.V1.Messages@. A frame carrying no @type@ field at
+--- all is not "unknown" — it is malformed, and fails as before.
+-decodeFrame :: SBS.ByteString -> Either BaikaiError (Maybe Messages.MessageStreamEvent)
+-decodeFrame payload = case Aeson.eitherDecodeStrict payload of
+-  Left err -> Left (decodeError (Text.pack err))
+-  Right val
+-    | frameIsUnknown val -> Right Nothing
+-    | otherwise -> case Aeson.fromJSON val of
+-        Aeson.Error err -> Left (decodeError (Text.pack err))
+-        Aeson.Success ev -> Right (Just ev)
+-
+--- | Whether this frame names a type the SDK has no constructor for.
+-frameIsUnknown :: Aeson.Value -> Bool
+-frameIsUnknown val = case val of
+-  Aeson.Object o -> case Aeson.Key.lookup "type" o of
+-    Just (Aeson.String "content_block_delta") ->
+-      case Aeson.Key.lookup "delta" o of
+-        Just (Aeson.Object d) -> case Aeson.Key.lookup "type" d of
+-          Just (Aeson.String dt) -> dt `notElem` knownDeltaTypes
+-          _ -> False
+-        _ -> False
+-    Just (Aeson.String t) -> t `notElem` knownEventTypes
+-    _ -> False
+-  _ -> False
+-
+-knownEventTypes :: [Text]
+-knownEventTypes =
+-  [ "message_start",
+-    "content_block_start",
+-    "content_block_delta",
+-    "content_block_stop",
+-    "message_delta",
+-    "message_stop",
+-    "ping",
+-    "error"
+-  ]
+-
+-knownDeltaTypes :: [Text]
+-knownDeltaTypes =
+-  [ "text_delta",
+-    "input_json_delta",
+-    "thinking_delta",
+-    "signature_delta"
+-  ]
+-
+-normalizePath :: String -> String
+-normalizePath = \case
+-  "" -> ""
+-  p@('/' : _) -> p
+-  p -> '/' : p
+-
+-stripCR :: SBS.ByteString -> SBS.ByteString
+-stripCR bs = case S8.unsnoc bs of
+-  Just (initBs, '\r') -> initBs
+-  _ -> bs
+-
+-unsnoc :: [a] -> Maybe ([a], a)
+-unsnoc [] = Nothing
+-unsnoc xs = Just (init xs, last xs)
++knownPayload :: Candidate.StreamPayload -> Maybe Candidate.StreamPayload
++knownPayload = \case
++  Candidate.UnknownEvent _ -> Nothing
++  Candidate.ContentBlockDelta _ (Candidate.UnknownDelta _ _) -> Nothing
++  payload -> Just payload
+
+ decodeLenient :: SBS.ByteString -> Text
+ decodeLenient = Text.decodeUtf8With Text.lenientDecode
+diff --git a/baikai-claude/src/Baikai/Provider/Claude/Transport.hs b/baikai-claude/src/Baikai/Provider/Claude/Transport.hs
+index f440222..e9a7fc2 100644
+--- a/baikai-claude/src/Baikai/Provider/Claude/Transport.hs
++++ b/baikai-claude/src/Baikai/Provider/Claude/Transport.hs
+@@ -26,7 +26,7 @@ import Baikai.Message qualified as Msg
+ import Baikai.Model (Model (..))
+ import Baikai.Options (Options (..))
+ import Baikai.Provider.Claude.Internal.Request (planSpeed)
+-import Claude.V1.Messages qualified as Messages
++import Claude.Messages qualified as Messages
+ import Control.Exception (throwIO)
+ import Control.Lens ((^.))
+ import Crypto.Hash (Digest, SHA256)
+@@ -65,7 +65,7 @@ requestHeaders apiKey anthropicVersion compat ctx m opts =
+                ]
+         )
+     speedHeaders = case fst (planSpeed compat (opts ^. #speed)) of
+-      Just Messages.SpeedFast -> [("anthropic-beta", "fast-mode-2026-02-01")]
++      Just Messages.Fast -> [("anthropic-beta", "fast-mode-2026-02-01")]
+       _ -> []
+     sessionHeaders =
+       if sendSessionAffinityHeaders compat
+diff --git a/baikai-claude/test/FableContractsSpec.hs b/baikai-claude/test/FableContractsSpec.hs
+index ccb9a6f..3d39396 100644
+--- a/baikai-claude/test/FableContractsSpec.hs
++++ b/baikai-claude/test/FableContractsSpec.hs
+@@ -1,12 +1,14 @@
++{-# LANGUAGE LambdaCase #-}
+ {-# LANGUAGE OverloadedRecordDot #-}
+
+ module FableContractsSpec (tests) where
+
+ import Baikai hiding (messages, model)
+-import Baikai.Models.Generated (anthropic_claude_fable_5_1, anthropic_claude_haiku_5_5, anthropic_claude_opus_5_5, anthropic_claude_sonnet_5_5)
++import Baikai.Models.Generated (anthropic_claude_fable_5_1, anthropic_claude_haiku_5_5, anthropic_claude_opus_5_5, anthropic_claude_sonnet_4_6, anthropic_claude_sonnet_5_5)
++import Baikai.Provider.Claude.Api (claudeMessagesProvider, claudeMessagesStream)
+ import Baikai.Provider.Claude.Internal.Request qualified as R
+ import Baikai.Provider.Claude.Internal.Stream (SseDriver, claudeMessagesStreamWith)
+-import Claude.V1.Messages qualified as C
++import Claude.Streaming qualified as C
+ import Contract (assertErrorContract)
+ import Control.Lens ((&), (.~), (^.))
+ import Control.Monad (forM_)
+@@ -14,10 +16,15 @@ import Data.Aeson (Value (..), object, (.=))
+ import Data.Aeson qualified as Aeson
+ import Data.Aeson.Key (Key)
+ import Data.Aeson.KeyMap qualified as KM
+-import Data.IORef (newIORef, readIORef, writeIORef)
++import Data.ByteString (ByteString)
++import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
++import Data.Map.Strict qualified as Map
+ import Data.Text (Text)
+ import Data.Text qualified as T
+ import Data.Vector qualified as V
++import Network.HTTP.Types (status200)
++import Network.Wai qualified as Wai
++import Network.Wai.Handler.Warp (testWithApplication)
+ import Streamly.Data.Stream qualified as Stream
+ import Test.Tasty (TestTree, testGroup)
+ import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+@@ -27,6 +34,8 @@ tests =
+   testGroup
+     "Fable contracts"
+     [ summaryTests,
++      legacySamplingVersion,
++      candidateCompleteAndStream,
+       testCase "Opus 5.5 and Sonnet 5.5 reject forced tools and replay signed empty thinking" $
+         forM_ [anthropic_claude_opus_5_5, anthropic_claude_sonnet_5_5] $ \opus -> do
+           opus.api @?= AnthropicMessages
+@@ -103,15 +112,22 @@ tests =
+         case Aeson.fromJSON raw of
+           Aeson.Success c -> (c :: AnthropicMessagesCompat).supportsForcedToolChoice @?= True
+           Aeson.Error err -> assertFailure err,
+-      testCase "two consecutive tool rounds preserve signed empty, visible and redacted thinking" $ do
++      testCase "candidate HTTP two consecutive tool rounds preserve signed empty, visible and redacted thinking" $ do
+         requests <- newIORef ([] :: [Value])
+         executed <- newIORef ([] :: [Text])
+-        let scripted call _ emit = do
+-              previous <- readIORef requests
+-              writeIORef requests (previous <> [call ^. #requestBody])
+-              send (case length previous of 0 -> toolTurn "" "sig-one" "toolu_1" True; 1 -> toolTurn "visible summary" "sig-two" "toolu_2" False; _ -> finalTurn) emit
+-        reg <- newProviderRegistryFrom [apiProvider AnthropicMessages (claudeMessagesStreamWith scripted)]
+-        (history, response) <- runToolLoopWith reg 4 (\tc -> do xs <- readIORef executed; writeIORef executed (xs <> [tc.id_]); pure (toolResultText "found")) model context summaryOptions
++        let respond request reply = do
++              Wai.pathInfo request @?= ["v1", "messages"]
++              lookup "x-api-key" (Wai.requestHeaders request) @?= Just "fable-contract-key"
++              lookup "anthropic-version" (Wai.requestHeaders request) @?= Just "2023-06-01"
++              body <- Wai.strictRequestBody request >>= either fail pure . Aeson.eitherDecode
++              num <- atomicModifyIORef' requests (\previous -> (previous <> [body], length previous))
++              let frames = case num of 0 -> toolTurn "" "sig-one" "toolu_1" True; 1 -> toolTurn "visible summary" "sig-two" "toolu_2" False; _ -> finalTurn
++              reply (Wai.responseLBS status200 [("Content-Type", "text/event-stream"), ("request-id", "req_trial_tools")] (foldMap (\frame -> "data: " <> Aeson.encode frame <> "\n\n") frames))
++        (history, response) <- testWithApplication (pure respond) $ \port -> do
++          let liveModel = model & #baseUrl .~ ("http://127.0.0.1:" <> T.pack (show port))
++              liveOptions = summaryOptions & #apiKey .~ Just (ApiKeyLiteral "fable-contract-key")
++          reg <- newProviderRegistryFrom [claudeMessagesProvider]
++          runToolLoopWith reg 4 (\tc -> do xs <- readIORef executed; writeIORef executed (xs <> [tc.id_]); pure (toolResultText "found")) liveModel context liveOptions
+         response.message.content @?= V.singleton (AssistantText (TextContent "done"))
+         readIORef executed >>= (@?= ["toolu_1", "toolu_2"])
+         bodies <- readIORef requests
+@@ -144,6 +160,55 @@ tests =
+           _ -> assertFailure "signed state was discarded on error"
+     ]
+
++legacySamplingVersion :: TestTree
++legacySamplingVersion = testCase "the explicit current API version rejects sampling before dispatch" $ do
++  captured <- newIORef ([] :: [(Maybe ByteString, Value)])
++  let app request respond = do
++        body <- Wai.strictRequestBody request >>= either fail pure . Aeson.eitherDecode
++        let version = lookup "anthropic-version" (Wai.requestHeaders request)
++        atomicModifyIORef' captured (\prior -> (prior <> [(version, body)], ()))
++        respond (Wai.responseLBS status200 [("Content-Type", "text/event-stream")] (foldMap (\frame -> "data: " <> Aeson.encode frame <> "\n\n") finalTurn))
++  testWithApplication (pure app) $ \port -> do
++    let selected = anthropic_claude_sonnet_4_6 & #baseUrl .~ ("http://127.0.0.1:" <> T.pack (show port))
++        configured = options & #temperature .~ Just 0.2
++        current = configured & #headers .~ Map.singleton "anthropic-version" "2026-10-21"
++        regularContext = systemUser "Policy" "Hello"
++    registry <- newProviderRegistryFrom [claudeMessagesProvider]
++    legacy <- completeRequestWith registry selected regularContext configured
++    responseError legacy @?= Nothing
++    rejected <- completeRequestWith registry selected regularContext current
++    fmap (.category) (responseError rejected) @?= Just InvalidRequest
++    assertBool "migration error names sampling" (maybe False (T.isInfixOf "sampling" . (.message)) (responseError rejected))
++    readIORef captured >>= \case
++      [(Just "2023-06-01", body)] -> field "temperature" body @?= Just (Number 0.2)
++      _ -> assertFailure "only the legacy call should dispatch"
++
++candidateCompleteAndStream :: TestTree
++candidateCompleteAndStream = testCase "candidate HTTP complete and stream agree on the same transcript" $ do
++  requests <- newIORef ([] :: [Value])
++  let app req respond = do
++        body <- Wai.strictRequestBody req >>= either fail pure . Aeson.eitherDecode
++        atomicModifyIORef' requests (\previous -> (previous <> [body], ()))
++        respond
++          ( Wai.responseLBS
++              status200
++              [("Content-Type", "text/event-stream"), ("request-id", "req_compare")]
++              (foldMap (\frame -> "data: " <> Aeson.encode frame <> "\n\n") finalTurn)
++          )
++  testWithApplication (pure app) $ \port -> do
++    registry <- newProviderRegistryFrom [claudeMessagesProvider]
++    let selected = model & #baseUrl .~ ("http://127.0.0.1:" <> T.pack (show port))
++        configured = options & #apiKey .~ Just (ApiKeyLiteral "candidate-comparison-key")
++    complete <- completeRequestWith registry selected context configured
++    events <- Stream.toList (claudeMessagesStream selected context configured)
++    streamed <- streamingComplete (\_ _ _ -> Stream.fromList events) selected context configured
++    let expected = V.singleton (AssistantText (TextContent "done"))
++    map (\reply -> reply ^. #message . #content) [complete, streamed] @?= [expected, expected]
++    map responseError [complete, streamed] @?= [Nothing, Nothing]
++  readIORef requests >>= \case
++    [complete, streamed] -> complete @?= streamed
++    received -> assertFailure ("expected two dispatches, got " <> show (length received))
++
+ model :: Model
+ model = anthropic_claude_fable_5_1
+
+@@ -175,10 +240,11 @@ options = emptyOptions & #apiKey .~ Just (ApiKeyLiteral "offline-key")
+ context :: Context
+ context = systemUser "unchanged system" "look twice" & #tools .~ V.singleton (mkTool "lookup" "lookup" (object ["type" .= ("object" :: Text)]))
+
+-send :: [Value] -> (Either BaikaiError C.MessageStreamEvent -> IO ()) -> IO ()
+-send frames emit = forM_ frames $ \raw -> case Aeson.fromJSON raw of
+-  Aeson.Error err -> assertFailure err
+-  Aeson.Success ev -> emit (Right ev)
++send :: [Value] -> (Either BaikaiError C.StreamPayload -> IO ()) -> IO ()
++send frames emit = forM_ frames $ \raw -> case C.decodeStreamEvent raw of
++  Left err -> assertFailure err
++  Right (Left _) -> assertFailure "expected a successful stream event"
++  Right (Right ev) -> emit (Right (C.eventPayload ev))
+
+ start :: Value
+ start = object ["type" .= ("message_start" :: Text), "message" .= object ["id" .= ("msg" :: Text), "type" .= ("message" :: Text), "role" .= ("assistant" :: Text), "model" .= ("claude-fable-5-1" :: Text), "content" .= ([] :: [Value]), "usage" .= object ["input_tokens" .= (5 :: Int), "output_tokens" .= (0 :: Int)]]]
+diff --git a/baikai-claude/test/LifecycleSpec.hs b/baikai-claude/test/LifecycleSpec.hs
+index 7e69ced..58864ef 100644
+--- a/baikai-claude/test/LifecycleSpec.hs
++++ b/baikai-claude/test/LifecycleSpec.hs
+@@ -14,6 +14,7 @@ module LifecycleSpec (tests) where
+
+ import Baikai
+ import Baikai.Models.Generated (anthropic_claude_haiku_4_5)
++import Baikai.Provider.Claude.Api (claudeMessagesStream)
+ import Baikai.Provider.Claude.Internal.Stream (SseDriver, claudeMessagesStreamWith)
+ import Baikai.Provider.Claude.Sse (sseFromResponse)
+ import Baikai.Provider.Internal.StreamWorker (frameQueueCapacity)
+@@ -25,9 +26,13 @@ import Data.ByteString (ByteString)
+ import Data.CaseInsensitive qualified as CI
+ import Data.Generics.Labels ()
+ import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
++import Data.Text qualified as Text
++import GHC.Conc (BlockReason (BlockedOnSTM), ThreadStatus (ThreadBlocked), threadStatus)
+ import Network.HTTP.Client.Internal qualified as HTTP
+-import Network.HTTP.Types.Status (mkStatus)
++import Network.HTTP.Types.Status (mkStatus, status200)
+ import Network.HTTP.Types.Version (http11)
++import Network.Wai qualified as Wai
++import Network.Wai.Handler.Warp (testWithApplication)
+ import Streamly.Data.Stream qualified as Stream
+ import System.Mem (performMajorGC)
+ import System.Timeout (timeout)
+@@ -41,9 +46,49 @@ tests =
+     [ boundedReadTest,
+       abandonedReleasesAfterGcTest,
+       cancellationReleasesWithoutGcTest,
+-      workerDeathCannotStrandTest
++      workerDeathCannotStrandTest,
++      candidateCancellation
+     ]
+
++candidateCancellation :: TestTree
++candidateCancellation = testCase "candidate HTTP cancellation closes the actual socket" $ do
++  closed <- newEmptyMVar
++  ready <- newEmptyMVar
++  done <- newEmptyMVar
++  count <- newIORef (0 :: Int)
++  let app request respond = do
++        _ <- Wai.strictRequestBody request
++        atomicModifyIORef' count (\n -> (n + 1, ()))
++        respond $
++          Wai.responseRaw
++            ( \recv send -> do
++                send ("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n" <> frameAt 0 <> frameAt 1 <> frameAt 2)
++                recv >>= putMVar closed
++            )
++            (Wai.responseLBS status200 [] "")
++  testWithApplication (pure app) $ \port -> do
++    let fixtureModel = testModel & #baseUrl .~ ("http://127.0.0.1:" <> Text.pack (show port))
++        signal event = do
++          case event of
++            TextDelta _ -> putMVar ready ()
++            _ -> pure ()
++          pure event
++        run = Stream.toList (Stream.mapM signal (claudeMessagesStream fixtureModel (systemUser "System" "Prompt") testOptions))
++    bracket (forkIO (try run >>= putMVar done)) (\tid -> throwTo tid ThreadKilled) $ \tid -> do
++      timeout 5_000_000 (takeMVar ready) >>= (@?= Just ())
++      let awaitDrain =
++            threadStatus tid >>= \case
++              ThreadBlocked BlockedOnSTM -> pure ()
++              _ -> threadDelay 1000 >> awaitDrain
++      timeout 5_000_000 awaitDrain >>= (@?= Just ())
++      throwTo tid ThreadKilled
++      result <- timeout 2_000_000 (takeMVar done)
++      case result of
++        Just (Left err) | Just ThreadKilled <- fromException (err :: SomeException) -> pure ()
++        _ -> assertFailure "expected asynchronous cancellation"
++      timeout 5_000_000 (takeMVar closed) >>= (@?= Just "")
++      readIORef count >>= (@?= 1)
++
+ -- | The bound alone stops the socket read: no garbage collection and no
+ -- timer is involved. Before the frame queue the counter grew without
+ -- limit, because the worker drained an endless body into an unbounded
+diff --git a/baikai-claude/test/Main.hs b/baikai-claude/test/Main.hs
+index 67819b6..16d8005 100644
+--- a/baikai-claude/test/Main.hs
++++ b/baikai-claude/test/Main.hs
+@@ -18,7 +18,7 @@ import Baikai.Provider.Claude.Api
+ import Baikai.Provider.Claude.Cli qualified as ClaudeCli
+ import Baikai.Provider.Claude.Interactive
+ import Baikai.Provider.Claude.Internal.Request (describeThinkingFor, mapRequest)
+-import Claude.V1.Messages qualified as Messages
++import Claude.Messages qualified as Messages
+ import CliCancellationSpec qualified
+ import CliEvidenceSpec qualified
+ import Contract (assertErrorContract)
+@@ -96,8 +96,8 @@ main =
+
+ -- | A 'JsonSchema' on 'Options.responseFormat' maps onto Anthropic's
+ -- native @output_config@, forwarding the schema 'Value' verbatim via
+--- 'Messages.jsonSchemaConfig'. Pure: 'mapRequest' is
+--- 'Either Text (Messages.CreateMessage, ThinkingTranslation)'.
++-- 'Messages.OutputConfig'. Pure: 'mapRequest' is
++-- 'Either Text (Messages.MessageRequest, ThinkingTranslation)'.
+ responseFormatMappingTest :: TestTree
+ responseFormatMappingTest =
+   testCase "responseFormat JsonSchema maps onto Anthropic output_config" $ do
+@@ -125,8 +125,8 @@ responseFormatMappingTest =
+     case mapRequest model ctx opts of
+       Left e -> assertFailure ("mapRequest failed: " <> Text.unpack e)
+       Right (req, _) ->
+-        req ^. #output_config
+-          @?= Just (Messages.jsonSchemaConfig personSchema)
++        req ^. #conversation . #features . #outputConfig
++          @?= Just (Messages.OutputConfig Nothing (case personSchema of Aeson.Object schema -> Just schema; _ -> Nothing))
+
+ optionsMappingTest :: TestTree
+ optionsMappingTest =
+@@ -146,8 +146,8 @@ optionsMappingTest =
+     case mapRequest model emptyContext opts of
+       Left e -> assertFailure ("mapRequest failed: " <> Text.unpack e)
+       Right (req, translation) -> do
+-        Messages.top_p req @?= Just 0.9
+-        Messages.stop_sequences req @?= Just (Vector.fromList ["END", "STOP"])
++        Messages.topP (Messages.messageRequestControls req) @?= Just 0.9
++        req ^. #stopSequences @?= ["END", "STOP"]
+         -- seed, frequencyPenalty and presencePenalty have no Anthropic
+         -- Messages field on any generation. They are dropped, but the
+         -- drop is recorded rather than silent — the whole point of the
+diff --git a/baikai-claude/test/SseSpec.hs b/baikai-claude/test/SseSpec.hs
+index 56ceba4..332db82 100644
+--- a/baikai-claude/test/SseSpec.hs
++++ b/baikai-claude/test/SseSpec.hs
+@@ -6,31 +6,31 @@ import Baikai.Models.Generated (anthropic_claude_fable_5_1, anthropic_claude_hai
+ import Baikai.Provider.Claude.Internal.Stream (Assembler, SseDriver, claudeMessagesStreamWith, emptyAssembler, translate)
+ import Baikai.Provider.Claude.Sse
+   ( ResponseMetadata,
+-    buildRequest,
+     claudeSseStreamValueWithHeaders,
+     sseFromResponse,
+   )
+ import Baikai.Usage qualified as Usage
+-import Claude.V1.Messages qualified as Messages
++import Claude.Streaming qualified as Messages
+ import Contract (assertErrorContract)
+ import Control.Lens ((&), (.~), (^.))
+ import Control.Monad (forM_)
+ import Data.Aeson qualified as Aeson
+ import Data.ByteString (ByteString)
+-import Data.ByteString qualified as SBS
+ import Data.ByteString.Char8 qualified as S8
+ import Data.ByteString.Lazy qualified as LBS
+ import Data.CaseInsensitive qualified as CI
+ import Data.Generics.Labels ()
+-import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
++import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
+ import Data.Set qualified as Set
+ import Data.Text qualified as Text
+ import Data.Time.Clock (UTCTime)
+ import Data.Vector (Vector)
+ import Data.Vector qualified as Vector
+ import Network.HTTP.Client.Internal qualified as HTTP
+-import Network.HTTP.Types.Status (mkStatus)
++import Network.HTTP.Types.Status (mkStatus, status200, status302)
+ import Network.HTTP.Types.Version (http11)
++import Network.Wai qualified as Wai
++import Network.Wai.Handler.Warp (testWithApplication)
+ import Servant.Client qualified as Client
+ import Streamly.Data.Stream qualified as Stream
+ import Test.Tasty (TestTree, testGroup)
+@@ -98,7 +98,7 @@ tests =
+         sseFromResponse resp (\md -> modifyIORef' metaRef (<> [md])) (\ev -> modifyIORef' eventsRef (<> [ev]))
+         events <- readIORef eventsRef
+         case events of
+-          [Right Messages.Message_Start {Messages.message = msg}, Right Messages.Message_Stop] ->
++          [Right (Messages.MessageStart msg), Right Messages.MessageStop] ->
+             msg ^. #id @?= "msg_1"
+           other -> assertFailure ("expected message_start then message_stop, got: " <> show other),
+       observationTests,
+@@ -224,27 +224,21 @@ blockClosingTests =
+             isRetryable be @?= False
+           other -> assertFailure ("expected a terminal EventError, got: " <> show (take 1 other)),
+       refusalDetailTests,
+-      testCase "a mid-stream transport error closes open blocks before the terminal" $ do
+-        -- The failure is injected through 'translate' rather than the
+-        -- transport, because what is under test is the assembler's
+-        -- Left path: a classified error arriving with a text block open.
+-        (openEvents, ass) <- replayTranslate openTextBody
+-        let (failEvents, _) = translate (Left (providerUnavailable "connection reset mid-stream")) ass testTime
+-        assertBool
+-          ("expected a text block to be open, got: " <> show openEvents)
+-          (not (null [() | TextStart {} <- openEvents]))
+-        case failEvents of
+-          [TextEnd BlockEndPayload {contentIndex = 0, content = body}, EventError TerminalPayload {message = msg}] -> do
++      testCase "early EOF closes open blocks before the terminal" $ do
++        (events, _) <- replayTranslate openTextBody
++        assertBool "the partial transcript opened a text block" (not (null [() | TextStart {} <- events]))
++        case reverse events of
++          EventError TerminalPayload {message = msg} : TextEnd BlockEndPayload {contentIndex = 0, content = body} : _ -> do
+             body @?= "partial"
+             [t | AssistantText (TextContent t) <- Vector.toList (messageBlocks msg)] @?= ["partial"]
+-          other -> assertFailure ("expected TextEnd then EventError, got: " <> show other),
++          other -> assertFailure ("expected TextEnd then EventError, got: " <> show (take 2 other)),
+       testCase "an unknown event type is skipped without ending the stream" $ do
+         events <-
+           transportEvents
+             200
+-            [ frameOf "{\"type\":\"message_stop\"}",
+-              frameOf "{\"type\":\"message_checkpoint\",\"checkpoint\":\"abc\"}",
+-              frameOf "{\"type\":\"ping\"}"
++            [ frameOf "{\"type\":\"message_checkpoint\",\"checkpoint\":\"abc\"}",
++              frameOf "{\"type\":\"ping\"}",
++              frameOf "{\"type\":\"message_stop\"}"
+             ]
+         assertAllRight events
+         length events @?= 2,
+@@ -252,9 +246,9 @@ blockClosingTests =
+         events <-
+           transportEvents
+             200
+-            [ frameOf "{\"type\":\"message_stop\"}",
+-              frameOf "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"citations_delta\",\"citation\":{}}}",
+-              frameOf "{\"type\":\"ping\"}"
++            [ frameOf "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"future_delta\"}}",
++              frameOf "{\"type\":\"ping\"}",
++              frameOf "{\"type\":\"message_stop\"}"
+             ]
+         assertAllRight events
+         length events @?= 2,
+@@ -304,14 +298,14 @@ frameOf body = "data: " <> body <> "\n\n"
+
+ -- | The raw events the transport produced, with no assembler involved.
+ transportEvents ::
+-  Int -> [ByteString] -> IO [Either BaikaiError Messages.MessageStreamEvent]
++  Int -> [ByteString] -> IO [Either BaikaiError Messages.StreamPayload]
+ transportEvents status chunks = do
+   eventsRef <- newIORef []
+   resp <- mkResponse status [] chunks
+   sseFromResponse resp (const (pure ())) (\ev -> modifyIORef' eventsRef (<> [ev]))
+   readIORef eventsRef
+
+-assertAllRight :: [Either BaikaiError Messages.MessageStreamEvent] -> Assertion
++assertAllRight :: [Either BaikaiError Messages.StreamPayload] -> Assertion
+ assertAllRight events =
+   case [e | Left e <- events] of
+     [] -> pure ()
+@@ -489,100 +483,46 @@ mkResponse status headers chunks = do
+ -- What goes on the wire
+ -- --------------------------------------------------------------------
+
+--- | The composed path and the redirect policy, asserted on the pure
+--- request rather than by opening a connection.
+---
+--- The path cases are the base-URL convention: `Model.baseUrl` is the API
+--- root, baikai appends `/v1/messages` itself, and a trailing
+--- `/v1` is removed rather than doubled — which is why
+--- `https://api.deepseek.com/v1`, the spelling every OpenAI SDK teaches,
+--- does not request `/v1/v1/...`.
+ requestShapeTests :: TestTree
+ requestShapeTests =
+-  testGroup
+-    "the request this transport sends"
+-    [ testCase "one version segment, whatever spelling the base URL used"
+-        $ forM_
+-          [ ("https://api.anthropic.com/v1", "/v1/messages"),
+-            ("https://api.anthropic.com", "/v1/messages"),
+-            ("https://gateway.test/anthropic", "/anthropic/v1/messages"),
+-            ("https://gateway.test/anthropic/v1/", "/anthropic/v1/messages")
+-          ]
+-        $ \(url, expected) -> case Http.canonicalBaseUrl url of
+-          Left problem -> assertFailure (Text.unpack (url <> " was refused: " <> problem))
+-          Right base -> do
+-            let request = buildRequest base [] (Aeson.object [])
+-            (url, HTTP.path request) @?= (url, S8.pack expected),
+-      testCase "the request never follows a redirect" $
+-        case Http.canonicalBaseUrl "https://h.test" of
+-          Left problem -> assertFailure (Text.unpack problem)
+-          Right base -> do
+-            let request = buildRequest base [] (Aeson.object [])
+-            HTTP.redirectCount request @?= 0
+-            HTTP.method request @?= "POST"
+-    ]
++  testCase "the live POST uses one version segment across base URL spellings" $ do
++    attempts <- newIORef []
++    let app request respond = do
++          modifyIORef' attempts (<> [(Wai.requestMethod request, Wai.rawPathInfo request)])
++          respond (Wai.responseLBS status200 [("Content-Type", "text/event-stream")] "data: {\"type\":\"message_stop\"}\n\n")
++    testWithApplication (pure app) $ \port -> do
++      let local = "http://127.0.0.1:" <> Text.pack (show port)
++      forM_ ["", "/v1", "/gateway", "/gateway/v1/"] $ \suffix -> do
++        base <- either (fail . Text.unpack) pure (Http.canonicalBaseUrl (local <> suffix))
++        events <- captureLiveFrames base
++        assertAllRight events
++    readIORef attempts >>= (@?= [("POST", "/v1/messages"), ("POST", "/v1/messages"), ("POST", "/gateway/v1/messages"), ("POST", "/gateway/v1/messages")])
+
+--- --------------------------------------------------------------------
+--- A 3xx is an error, not a hop
+--- --------------------------------------------------------------------
+-
+--- | A 302 is delivered as the terminal error and no second connection is
+--- ever opened.
+---
+--- @http-client@'s default is to follow up to ten redirects with every
+--- header intact, so before `redirectCount = 0` this test recorded a
+--- second connection — to whatever host the `Location` header named —
+--- carrying the caller's bearer token.
+---
+--- The "server" is an in-process fake built from `managerRawConnection`,
+--- which is what lets the case observe /which hosts a connection was
+--- opened to/ directly, with no socket and no port.
+ redirectTests :: TestTree
+ redirectTests =
+-  testGroup
+-    "redirects"
+-    [ testCase "a 302 is the terminal error and no second host is contacted" $ do
+-        attemptsRef <- newIORef []
+-        manager <- fakeRedirectingManager attemptsRef
+-        case Http.canonicalBaseUrl "http://proxy.test" of
+-          Left problem -> assertFailure (Text.unpack problem)
+-          Right base -> do
+-            let env = Client.mkClientEnv manager base
+-            eventsRef <- newIORef []
+-            metaRef <- newIORef []
+-            claudeSseStreamValueWithHeaders
+-              env
+-              [("Authorization", "Bearer sk-test")]
+-              (Aeson.object [])
+-              (\md -> modifyIORef' metaRef (<> [md]))
+-              (\ev -> modifyIORef' eventsRef (<> [ev]))
+-            attempts <- readIORef attemptsRef
+-            attempts @?= [("proxy.test", 80)]
+-            events <- readIORef eventsRef
+-            case events of
+-              [Left e] -> httpStatus e @?= Just 302
+-              other -> assertFailure ("expected one 302 error, got: " <> show other)
+-    ]
++  testCase "a 302 terminates without a second request" $ do
++    attempts <- newIORef []
++    let app request respond = do
++          modifyIORef' attempts (<> [Wai.rawPathInfo request])
++          respond (Wai.responseLBS status302 [("Location", "/redirect-target")] "")
++    testWithApplication (pure app) $ \port -> do
++      events <- captureLiveFrames (Client.BaseUrl Client.Http "127.0.0.1" port "")
++      case events of
++        [Left e] -> httpStatus e @?= Just 302
++        other -> assertFailure ("expected one 302 error, got: " <> show other)
++    readIORef attempts >>= (@?= ["/v1/messages"])
+
+--- | A manager whose every connection answers one 302 pointing at another
+--- host, and records the host and port it was opened to.
+-fakeRedirectingManager :: IORef [(String, Int)] -> IO HTTP.Manager
+-fakeRedirectingManager attemptsRef =
+-  HTTP.newManager
+-    HTTP.defaultManagerSettings
+-      { HTTP.managerRawConnection = pure open
+-      }
+-  where
+-    open _ host portNumber = do
+-      modifyIORef' attemptsRef (<> [(host, portNumber)])
+-      remaining <- newIORef [redirectResponse]
+-      HTTP.makeConnection
+-        (atomicModifyIORef' remaining (\chunks -> case chunks of [] -> ([], SBS.empty); (c : cs) -> (cs, c)))
+-        (\_ -> pure ())
+-        (pure ())
+-    redirectResponse =
+-      S8.pack
+-        "HTTP/1.1 302 Found\r\nLocation: http://evil.test/steal\r\nContent-Length: 0\r\n\r\n"
++captureLiveFrames :: Client.BaseUrl -> IO [Either BaikaiError Messages.StreamPayload]
++captureLiveFrames base = do
++  events <- newIORef []
++  let body = Aeson.object ["model" Aeson..= ("fixture" :: Text.Text), "max_tokens" Aeson..= (1 :: Int), "messages" Aeson..= ([] :: [Aeson.Value])]
++  claudeSseStreamValueWithHeaders
++    base
++    [("x-api-key", "fixture-key"), ("anthropic-version", "2023-06-01")]
++    body
++    (const (pure ()))
++    (\event -> modifyIORef' events (<> [event]))
++  readIORef events
+
+ refusalDetailTests :: TestTree
+ refusalDetailTests =
+diff --git a/baikai-claude/test/ThinkingSpec.hs b/baikai-claude/test/ThinkingSpec.hs
+index bc95116..e1bbf8a 100644
+--- a/baikai-claude/test/ThinkingSpec.hs
++++ b/baikai-claude/test/ThinkingSpec.hs
+@@ -11,15 +11,17 @@ import Baikai.Provider.Claude.Internal.Request
+     uncappedMaxTokensFloor,
+   )
+ import Baikai.Provider.Claude.Internal.Stream (Assembler, emptyAssembler, translate)
+-import Claude.V1.Messages qualified as Messages
++import Claude.Messages qualified as Messages
++import Claude.Streaming qualified as Messages
+ import Control.Lens ((&), (.~), (^.))
+ import Data.Aeson qualified as Aeson
+ import Data.Aeson.KeyMap qualified as KeyMap
+-import Data.ByteString.Lazy qualified as BSL
++import Data.Aeson.Types (Pair)
+ import Data.Char qualified as Char
+ import Data.Generics.Labels ()
+ import Data.IntMap.Strict qualified as IntMap
+ import Data.List qualified as List
++import Data.List.NonEmpty qualified as NonEmpty
+ import Data.Text qualified as Text
+ import Data.Time.Clock (UTCTime)
+ import Data.Vector qualified as Vector
+@@ -103,7 +105,7 @@ neverExceedsCapTests :: [TestTree]
+ neverExceedsCapTests =
+   [ testCase (name <> " " <> levelName <> " stays within catalog cap") $ do
+       req <- requestFor model (emptyOptions & #thinking .~ Just level)
+-      req ^. #max_tokens <= model ^. #maxOutputTokens
++      requestMaxTokens req <= model ^. #maxOutputTokens
+         @?= True
+   | (name, model, _, _, _, _) <- anthropicModels,
+     (levelName, level) <- thinkingLevels
+@@ -117,14 +119,14 @@ styleTests =
+         AnthropicThinkingBudget -> do
+           let expectedBudget = thinkingTokenBudget level
+           requestThinking req
+-            @?= Just Messages.ThinkingEnabled {Messages.budget_tokens = expectedBudget}
++            @?= Just (Messages.ManualBudget (expectedBudget) Nothing)
+           assertBool
+             "max_tokens leaves visible-output room beyond budget"
+-            (req ^. #max_tokens > expectedBudget)
++            (requestMaxTokens req > expectedBudget)
+         AnthropicThinkingAdaptive -> do
+-          requestThinking req @?= Just (Messages.ThinkingAdaptiveWithDisplay Messages.ThinkingSummarized)
+-          req ^. #max_tokens @?= model ^. #maxOutputTokens
+-          (req ^. #output_config >>= Messages.effort)
++          requestThinking req @?= Just (Messages.Adaptive (Just Messages.Summarized))
++          requestMaxTokens req @?= model ^. #maxOutputTokens
++          (requestOutputConfig req >>= Messages.effort >>= encodedEffort)
+             @?= adaptiveEffort level
+   | (name, model, style, _, _, _) <- anthropicModels,
+     (levelName, level) <- thinkingLevels
+@@ -216,7 +218,7 @@ conditionalDowngradeTests =
+             opts = emptyOptions & #thinking .~ Just ThinkingMinimal
+         req <- requestFor model opts
+         requestThinking req @?= Nothing
+-        req ^. #max_tokens @?= 1000
++        requestMaxTokens req @?= 1000
+         t <- translationFor model opts
+         t ^. #requested @?= Just ThinkingMinimal
+         t ^. #mode @?= ThinkingModeUnsupported
+@@ -236,8 +238,8 @@ adaptiveHigherEffortTests =
+           requestFor
+             anthropic_claude_opus_4_7
+             (emptyOptions & #thinking .~ Just level)
+-        requestThinking req @?= Just (Messages.ThinkingAdaptiveWithDisplay Messages.ThinkingSummarized)
+-        (req ^. #output_config >>= Messages.effort) @?= Just expected
++        requestThinking req @?= Just (Messages.Adaptive (Just Messages.Summarized))
++        (requestOutputConfig req >>= Messages.effort >>= encodedEffort) @?= Just expected
+     | (name, level, expected) <-
+         [ ("xhigh is preserved", ThinkingXHigh, "xhigh"),
+           ("max is preserved", ThinkingMax, "max")
+@@ -256,8 +258,8 @@ opus55HighTest =
+         anthropic_claude_opus_5_5
+         emptyContext
+         (emptyOptions & #thinking .~ Just ThinkingHigh)
+-    requestThinking req @?= Just (Messages.ThinkingAdaptiveWithDisplay Messages.ThinkingSummarized)
+-    (req ^. #output_config >>= Messages.effort) @?= Just "high"
++    requestThinking req @?= Just (Messages.Adaptive (Just Messages.Summarized))
++    (requestOutputConfig req >>= Messages.effort >>= encodedEffort) @?= Just "high"
+     t ^. #mode @?= ThinkingModeAdaptive
+     t ^. #effortText @?= Just "high"
+     t ^. #adjustments @?= []
+@@ -275,10 +277,10 @@ maxBudgetTest =
+         anthropic_claude_haiku_4_5
+         (emptyOptions & #thinking .~ Just ThinkingMax)
+     requestThinking req
+-      @?= Just Messages.ThinkingEnabled {Messages.budget_tokens = 32768}
++      @?= Just (Messages.ManualBudget (32768) Nothing)
+     assertBool
+       "max_tokens leaves visible-output room beyond the max thinking budget"
+-      (req ^. #max_tokens > 32768)
++      (requestMaxTokens req > 32768)
+
+ explicitMaxTokensTest :: TestTree
+ explicitMaxTokensTest =
+@@ -290,8 +292,8 @@ explicitMaxTokensTest =
+         budget = thinkingTokenBudget ThinkingHigh
+     req <- requestFor anthropic_claude_haiku_4_5 opts
+     requestThinking req
+-      @?= Just Messages.ThinkingEnabled {Messages.budget_tokens = budget}
+-    req ^. #max_tokens @?= anthropic_claude_haiku_4_5 ^. #maxOutputTokens
++      @?= Just (Messages.ManualBudget (budget) Nothing)
++    requestMaxTokens req @?= anthropic_claude_haiku_4_5 ^. #maxOutputTokens
+
+ handRolledUnclampedTest :: TestTree
+ handRolledUnclampedTest =
+@@ -309,7 +311,7 @@ handRolledUnclampedTest =
+             & #maxTokens .~ Just 100
+         expected = 100 + thinkingTokenBudget ThinkingLow
+     req <- requestFor model opts
+-    req ^. #max_tokens @?= expected
++    requestMaxTokens req @?= expected
+
+ tooSmallCapDropsThinkingTest :: TestTree
+ tooSmallCapDropsThinkingTest =
+@@ -320,7 +322,7 @@ tooSmallCapDropsThinkingTest =
+         opts = emptyOptions & #thinking .~ Just ThinkingMinimal
+     req <- requestFor model opts
+     requestThinking req @?= Nothing
+-    req ^. #max_tokens @?= 1000
++    requestMaxTokens req @?= 1000
+
+ mergedOutputConfigTest :: TestTree
+ mergedOutputConfigTest =
+@@ -333,10 +335,10 @@ mergedOutputConfigTest =
+                 & #thinking .~ Just level
+                 & #responseFormat
+                   .~ Just (JsonSchema (jsonSchemaFormat "answer" schema) {strict = True})
+-            expected = (Messages.jsonSchemaConfig schema) {Messages.effort = Just word}
++            expected = Messages.OutputConfig (Just (Messages.VersionedEffort word)) (asObject schema)
+         req <- requestFor model opts
+-        requestThinking req @?= Just (Messages.ThinkingAdaptiveWithDisplay Messages.ThinkingSummarized)
+-        req ^. #output_config @?= Just expected
++        requestThinking req @?= Just (Messages.Adaptive (Just Messages.Summarized))
++        requestOutputConfig req @?= Just expected
+     | (model, level, word) <-
+         [ (anthropic_claude_opus_4_6, ThinkingMedium, "medium"),
+           (anthropic_claude_opus_5_5, ThinkingHigh, "high")
+@@ -355,8 +357,8 @@ explicitCompatOverridesDefaultTest =
+             & #compat .~ CompatAnthropicMessages compat
+         opts = emptyOptions & #thinking .~ Just ThinkingLow
+     req <- requestFor model opts
+-    requestThinking req @?= Just (Messages.ThinkingAdaptiveWithDisplay Messages.ThinkingSummarized)
+-    (req ^. #output_config >>= Messages.effort) @?= Just "low"
++    requestThinking req @?= Just (Messages.Adaptive (Just Messages.Summarized))
++    (requestOutputConfig req >>= Messages.effort >>= encodedEffort) @?= Just "low"
+
+ -- | 'ThinkingNone' against every catalog model, and the wire bytes it
+ -- and the settings it sits beside produce.
+@@ -375,8 +377,8 @@ thinkingNoneTests =
+           if anthropicMessagesCompatFor model ^. #supportsThinkingDisabled
+             then do
+               requestThinking req @?= Just Messages.ThinkingDisabled
+-              (req ^. #output_config >>= Messages.effort) @?= Nothing
+-              req ^. #max_tokens @?= model ^. #maxOutputTokens
++              (requestOutputConfig req >>= Messages.effort >>= encodedEffort) @?= Nothing
++              requestMaxTokens req @?= model ^. #maxOutputTokens
+               t ^. #mode @?= ThinkingModeToggle
+               t ^. #wireField @?= Just "thinking"
+               t ^. #effortText @?= Nothing
+@@ -385,8 +387,8 @@ thinkingNoneTests =
+             else do
+               -- Anthropic rejects "disabled" here, so the least thinking
+               -- the model can be asked for is adaptive at low effort.
+-              requestThinking req @?= Just (Messages.ThinkingAdaptiveWithDisplay Messages.ThinkingSummarized)
+-              (req ^. #output_config >>= Messages.effort) @?= Just "low"
++              requestThinking req @?= Just (Messages.Adaptive (Just Messages.Summarized))
++              (requestOutputConfig req >>= Messages.effort >>= encodedEffort) @?= Just "low"
+               t ^. #mode @?= ThinkingModeAdaptive
+               t ^. #adjustments @?= [EffortClamped ThinkingNone "low"]
+       | (name, model, _, _, _, _) <- anthropicModels
+@@ -421,7 +423,7 @@ thinkingNoneTests =
+                        & #responseFormat .~ Just (JsonSchema (jsonSchemaFormat "answer" schema))
+                req <- requestFor anthropic_claude_haiku_5_5 opts
+                requestThinking req @?= Just Messages.ThinkingDisabled
+-               req ^. #output_config @?= Just (Messages.jsonSchemaConfig schema),
++               requestOutputConfig req @?= Just (Messages.OutputConfig Nothing (asObject schema)),
+              testCase "a budget-style host that rejects disabled omits the field and says so" $ do
+                let model =
+                      anthropic_claude_haiku_4_5
+@@ -429,7 +431,7 @@ thinkingNoneTests =
+                    opts = emptyOptions & #thinking .~ Just ThinkingNone
+                (req, t) <- mappedFor model emptyContext opts
+                requestThinking req @?= Nothing
+-               req ^. #max_tokens @?= model ^. #maxOutputTokens
++               requestMaxTokens req @?= model ^. #maxOutputTokens
+                t ^. #mode @?= ThinkingModeUnsupported
+                t ^. #wireField @?= Nothing
+                t ^. #adjustments @?= [EffortOmitted ThinkingNone],
+@@ -478,20 +480,35 @@ thinkingNoneTests =
+         Aeson.Object o -> pure o
+         other -> assertFailure ("request did not encode as an object: " <> show other)
+
+-requestFor :: Model -> Options -> IO Messages.CreateMessage
++requestFor :: Model -> Options -> IO Messages.MessageRequest
+ requestFor model opts = fst <$> mappedFor model emptyContext opts
+
+ translationFor :: Model -> Options -> IO ThinkingTranslation
+ translationFor model opts = snd <$> mappedFor model emptyContext opts
+
+ mappedFor ::
+-  Model -> Context -> Options -> IO (Messages.CreateMessage, ThinkingTranslation)
++  Model -> Context -> Options -> IO (Messages.MessageRequest, ThinkingTranslation)
+ mappedFor model ctx opts = case mapRequest model ctx opts of
+   Left e -> assertFailure ("mapRequest failed: " <> Text.unpack e)
+   Right mapped -> pure mapped
+
+-requestThinking :: Messages.CreateMessage -> Maybe Messages.Thinking
+-requestThinking Messages.CreateMessage {Messages.thinking = t} = t
++requestThinking :: Messages.MessageRequest -> Maybe Messages.Thinking
++requestThinking request = request ^. #conversation . #features . #thinking
++
++requestMaxTokens :: Messages.MessageRequest -> Natural
++requestMaxTokens request = Messages.maxTokensValue (request ^. #outputLimit)
++
++requestOutputConfig :: Messages.MessageRequest -> Maybe Messages.OutputConfig
++requestOutputConfig request = request ^. #conversation . #features . #outputConfig
++
++encodedEffort :: Messages.Effort -> Maybe Text.Text
++encodedEffort effort = case Aeson.toJSON effort of
++  Aeson.String value -> Just value
++  _ -> Nothing
++
++asObject :: Aeson.Value -> Maybe Aeson.Object
++asObject (Aeson.Object fields) = Just fields
++asObject _ = Nothing
+
+ adaptiveEffort :: ThinkingLevel -> Maybe Text.Text
+ adaptiveEffort = \case
+@@ -529,12 +546,12 @@ samplingTests =
+           t <- translationFor model opts
+           if supported
+             then do
+-              Messages.temperature req @?= Just 0.2
+-              Messages.top_p req @?= Just 0.9
++              Messages.temperature (Messages.messageRequestControls req) @?= Just 0.2
++              Messages.topP (Messages.messageRequestControls req) @?= Just 0.9
+               filter isSamplingAdjustment (t ^. #adjustments) @?= []
+             else do
+-              Messages.temperature req @?= Nothing
+-              Messages.top_p req @?= Nothing
++              Messages.temperature (Messages.messageRequestControls req) @?= Nothing
++              Messages.topP (Messages.messageRequestControls req) @?= Nothing
+               filter isSamplingAdjustment (t ^. #adjustments)
+                 @?= [SamplingDroppedUnsupportedModel ["temperature", "top_p"]]
+       | (name, model, _, supported, _, _) <- anthropicModels,
+@@ -547,7 +564,7 @@ samplingTests =
+                let opts = emptyOptions & #temperature .~ Just 0.2
+                req <- requestFor anthropic_claude_sonnet_5 opts
+                t <- translationFor anthropic_claude_sonnet_5 opts
+-               Messages.temperature req @?= Nothing
++               Messages.temperature (Messages.messageRequestControls req) @?= Nothing
+                t ^. #mode @?= ThinkingModeAbsent
+                t ^. #requested @?= Nothing
+                t ^. #adjustments @?= [SamplingDroppedUnsupportedModel ["temperature"]],
+@@ -595,20 +612,20 @@ zeroCapFloorTests =
+     "a model with an unknown output cap sends the documented floor"
+     [ testCase "hand-rolled model with unknown cap sends the 1024 floor" $ do
+         req <- requestFor uncappedModel emptyOptions
+-        req ^. #max_tokens @?= uncappedMaxTokensFloor,
++        requestMaxTokens req @?= uncappedMaxTokensFloor,
+       testCase "the floor leaves room for a thinking budget" $ do
+         let opts = emptyOptions & #thinking .~ Just ThinkingLow
+         req <- requestFor uncappedModel opts
+         t <- translationFor uncappedModel opts
+-        req ^. #max_tokens @?= uncappedMaxTokensFloor + thinkingTokenBudget ThinkingLow
++        requestMaxTokens req @?= uncappedMaxTokensFloor + thinkingTokenBudget ThinkingLow
+         requestThinking req
+-          @?= Just Messages.ThinkingEnabled {Messages.budget_tokens = thinkingTokenBudget ThinkingLow}
++          @?= Just (Messages.ManualBudget (thinkingTokenBudget ThinkingLow) Nothing)
+         t ^. #adjustments @?= [],
+       testCase "an explicit maxTokens of zero is forwarded as written" $ do
+         -- The floor stands in for an unknown cap, not for a caller's
+         -- own choice. Someone who wrote Just 0 gets 0.
+         req <- requestFor uncappedModel (emptyOptions & #maxTokens .~ Just 0)
+-        req ^. #max_tokens @?= 0
++        requestMaxTokens req @?= 0
+     ]
+   where
+     uncappedModel =
+@@ -715,11 +732,12 @@ toolIdTests =
+       assertBool ("no character outside the alphabet: " <> Text.unpack i) (Text.all ok i)
+     ok c = (Char.isAscii c && Char.isAlphaNum c) || c == '_' || c == '-'
+     toolUseIds msgs =
+-      [i | m <- Vector.toList msgs, Messages.Content_Tool_Use {Messages.id = i} <- Vector.toList (messageContent m)]
++      [i | m <- Vector.toList msgs, Messages.InputToolUse i _ _ _ <- Vector.toList (messageContent m)]
+     toolResultIds msgs =
+       [ i
+       | m <- Vector.toList msgs,
+-        Messages.Content_Tool_Result {Messages.tool_use_id = i} <- Vector.toList (messageContent m)
++        Messages.InputToolResult result <- Vector.toList (messageContent m),
++        let i = Messages.toolUseId result
+       ]
+
+ -- | An assistant turn carrying exactly these blocks.
+@@ -748,12 +766,12 @@ mappedMessages msgs =
+   requestMessages <$> requestForContext anthropic_claude_haiku_4_5 (contextOf msgs) emptyOptions
+
+ messageRole :: Messages.Message -> Messages.Role
+-messageRole Messages.Message {Messages.role = r} = r
++messageRole msg = msg ^. #role
+
+ -- | What @claude@ 1.5.0 added to the Messages response and what baikai
+ -- now reads off it. Each of these was unreadable before the bump:
+ -- 'Messages.Usage' had no thinking-token breakdown,
+--- 'Messages.StreamUsage' carried only @output_tokens@, and
++-- 'Messages.UsageUpdate' carried only @output_tokens@, and
+ -- 'Messages.StopReason' had no @pause_turn@.
+ claude15UsageTests :: TestTree
+ claude15UsageTests =
+@@ -764,8 +782,7 @@ claude15UsageTests =
+               runClaudeEvents
+                 [ messageStartWith
+                     (startUsage 10)
+-                      { Messages.output_tokens_details =
+-                          Just Messages.OutputTokensDetails {Messages.thinking_tokens = 7}
++                      { Messages.usageEvidence = noUsageEvidence {Messages.outputTokensDetails = Just (Messages.OutputTokenDetails (Just 7))}
+                       }
+                 ]
+         ass ^. #usage . #reasoningTokens @?= Just 7,
+@@ -779,13 +796,12 @@ claude15UsageTests =
+               runClaudeEvents
+                 [ messageStartWith (startUsage 10),
+                   messageDelta
+-                    (Just Messages.End_Turn)
++                    (Just Messages.EndTurn)
+                     (outputOnlyStreamUsage 12)
+-                      { Messages.stream_input_tokens = Just 40,
+-                        Messages.stream_cache_read_input_tokens = Just 5,
+-                        Messages.stream_cache_creation_input_tokens = Just 3,
+-                        Messages.stream_output_tokens_details =
+-                          Just Messages.OutputTokensDetails {Messages.thinking_tokens = 9}
++                      { Messages.inputTokens = Just 40,
++                        Messages.cacheReadInputTokens = Just 5,
++                        Messages.cacheCreationInputTokens = Just 3,
++                        Messages.usageEvidence = noUsageEvidence {Messages.outputTokensDetails = Just (Messages.OutputTokenDetails (Just 9))}
+                       }
+                 ]
+             u = ass ^. #usage
+@@ -801,10 +817,10 @@ claude15UsageTests =
+               runClaudeEvents
+                 [ messageStartWith
+                     (startUsage 10)
+-                      { Messages.cache_read_input_tokens = Just 5,
+-                        Messages.cache_creation_input_tokens = Just 3
++                      { Messages.cacheReadInputTokens = Just 5,
++                        Messages.cacheCreationInputTokens = Just 3
+                       },
+-                  messageDelta (Just Messages.End_Turn) (outputOnlyStreamUsage 12)
++                  messageDelta (Just Messages.EndTurn) (outputOnlyStreamUsage 12)
+                 ]
+             u = ass ^. #usage
+         u ^. #inputTokens @?= 10
+@@ -819,8 +835,8 @@ claude15UsageTests =
+         let (events, ass) =
+               runClaudeEvents
+                 [ messageStart,
+-                  messageDelta (Just Messages.Pause_Turn) (outputOnlyStreamUsage 12),
+-                  Messages.Message_Stop
++                  messageDelta (Just Messages.PauseTurn) (outputOnlyStreamUsage 12),
++                  Messages.MessageStop
+                 ]
+         ass ^. #stopReason @?= Stop
+         case last events of
+@@ -872,20 +888,11 @@ streamFidelityTests =
+         req <- requestForContext anthropic_claude_haiku_4_5 ctx emptyOptions
+         case Vector.toList (requestMessages req) of
+           (assistantMsg : _) ->
+-            BSL.toStrict (Aeson.encode (messageContent assistantMsg))
+-              @?= BSL.toStrict
+-                ( Aeson.encode
+-                    ( Vector.fromList
+-                        [ Messages.Content_Thinking
+-                            { Messages.thinking = "because therefore",
+-                              Messages.signature = "sig-final"
+-                            },
+-                          Messages.Content_Redacted_Thinking
+-                            { Messages.data_ = "ENCRYPTED=="
+-                            }
+-                        ]
+-                    )
+-                )
++            Aeson.toJSON (messageContent assistantMsg)
++              @?= Aeson.toJSON
++                [ responseBlock "thinking" ["thinking" Aeson..= ("because therefore" :: Text.Text), "signature" Aeson..= ("sig-final" :: Text.Text)],
++                  responseBlock "redacted_thinking" ["data" Aeson..= ("ENCRYPTED==" :: Text.Text)]
++                ]
+           _ -> assertFailure "mapped request contained no assistant message",
+       testCase "signature-less non-redacted thinking is omitted on replay" $ do
+         let msg =
+@@ -911,165 +918,63 @@ streamFidelityTests =
+         req <- requestForContext anthropic_claude_haiku_4_5 ctx emptyOptions
+         case Vector.toList (requestMessages req) of
+           [assistantMsg] ->
+-            BSL.toStrict (Aeson.encode (messageContent assistantMsg))
+-              @?= BSL.toStrict
+-                ( Aeson.encode
+-                    ( Vector.singleton
+-                        Messages.Content_Text
+-                          { Messages.text = "visible",
+-                            Messages.cache_control = Nothing
+-                          }
+-                    )
+-                )
++            Aeson.toJSON (messageContent assistantMsg)
++              @?= Aeson.toJSON [responseBlock "text" ["text" Aeson..= ("visible" :: Text.Text)]]
+           _ -> assertFailure "expected exactly one mapped assistant message",
+       testCase "unopened block deltas do not fabricate events or closed blocks" $ do
+         let (events, ass) =
+               runClaudeEvents
+-                [ Messages.Content_Block_Delta
+-                    { Messages.index = 7,
+-                      Messages.delta = Messages.Delta_Thinking_Delta {Messages.thinking = "ghost"}
+-                    },
+-                  Messages.Content_Block_Delta
+-                    { Messages.index = 8,
+-                      Messages.delta = Messages.Delta_Input_Json_Delta {Messages.partial_json = "{\"x\""}
+-                    },
+-                  Messages.Content_Block_Stop {Messages.index = 8}
++                [ Messages.ContentBlockDelta 7 (Messages.ThinkingDelta "ghost"),
++                  Messages.ContentBlockDelta 8 (Messages.InputJsonDelta "{\"x\""),
++                  Messages.ContentBlockStop 8
+                 ]
+         events @?= []
+         IntMap.null (ass ^. #closed) @?= True
+         IntMap.null (ass ^. #toolArgsBuf) @?= True
+     ]
+
+-signedAndRedactedStream :: [Messages.MessageStreamEvent]
++signedAndRedactedStream :: [Messages.StreamPayload]
+ signedAndRedactedStream =
+   [ messageStart,
+-    Messages.Content_Block_Start
+-      { Messages.index = 0,
+-        Messages.content_block = Messages.ContentBlock_Thinking {Messages.thinking = "", Messages.signature = ""}
+-      },
+-    Messages.Content_Block_Delta
+-      { Messages.index = 0,
+-        Messages.delta = Messages.Delta_Thinking_Delta {Messages.thinking = "because "}
+-      },
+-    Messages.Content_Block_Delta
+-      { Messages.index = 0,
+-        Messages.delta = Messages.Delta_Thinking_Delta {Messages.thinking = "therefore"}
+-      },
+-    Messages.Content_Block_Delta
+-      { Messages.index = 0,
+-        Messages.delta = Messages.Delta_Signature_Delta {Messages.signature = "sig-"}
+-      },
+-    Messages.Content_Block_Delta
+-      { Messages.index = 0,
+-        Messages.delta = Messages.Delta_Signature_Delta {Messages.signature = "final"}
+-      },
+-    Messages.Content_Block_Stop {Messages.index = 0},
+-    Messages.Content_Block_Start
+-      { Messages.index = 1,
+-        Messages.content_block = Messages.ContentBlock_Redacted_Thinking {Messages.data_ = "ENCRYPTED=="}
+-      },
+-    Messages.Content_Block_Stop {Messages.index = 1},
+-    Messages.Message_Delta
+-      { Messages.message_delta =
+-          Messages.MessageDelta
+-            { Messages.stop_reason = Just Messages.End_Turn,
+-              Messages.stop_sequence = Nothing,
+-              Messages.stop_details = Nothing
+-            },
+-        Messages.usage = outputOnlyStreamUsage 12
+-      },
+-    Messages.Message_Stop
++    Messages.ContentBlockStart 0 (parseBlock (responseBlock "thinking" ["thinking" Aeson..= ("" :: Text.Text), "signature" Aeson..= ("" :: Text.Text)])),
++    Messages.ContentBlockDelta 0 (Messages.ThinkingDelta "because "),
++    Messages.ContentBlockDelta 0 (Messages.ThinkingDelta "therefore"),
++    Messages.ContentBlockDelta 0 (Messages.SignatureDelta "sig-"),
++    Messages.ContentBlockDelta 0 (Messages.SignatureDelta "final"),
++    Messages.ContentBlockStop 0,
++    Messages.ContentBlockStart 1 (parseBlock (responseBlock "redacted_thinking" ["data" Aeson..= ("ENCRYPTED==" :: Text.Text)])),
++    Messages.ContentBlockStop 1,
++    messageDelta (Just Messages.EndTurn) (outputOnlyStreamUsage 12),
++    Messages.MessageStop
+   ]
++  where
++    parseBlock raw = case Aeson.fromJSON raw of
++      Aeson.Success value -> value
++      Aeson.Error err -> error err
+
+-messageStart :: Messages.MessageStreamEvent
+-messageStart =
+-  Messages.Message_Start
+-    { Messages.message =
+-        Messages.MessageResponse
+-          { Messages.id = "msg_test",
+-            Messages.type_ = "message",
+-            Messages.role = Messages.Assistant,
+-            Messages.content = Vector.empty,
+-            Messages.model = "claude-haiku-4-5",
+-            Messages.stop_reason = Nothing,
+-            Messages.stop_sequence = Nothing,
+-            Messages.stop_details = Nothing,
+-            Messages.usage = startUsage 10,
+-            Messages.container = Nothing
+-          }
+-    }
++responseBlock :: Text.Text -> [Pair] -> Aeson.Value
++responseBlock tag fields = Aeson.object (("type" Aeson..= tag) : fields)
++
++messageStart :: Messages.StreamPayload
++messageStart = messageStartWith (startUsage 10)
++
++noUsageEvidence :: Messages.UsageEvidence
++noUsageEvidence = Messages.UsageEvidence Nothing Nothing Nothing Nothing Nothing Nothing
+
+--- | A @message_start@ usage reporting the given prompt tokens and
+--- nothing else. Refine it by record update rather than respelling ten
+--- fields; the ones this provider never reads — @inference_geo@,
+--- @service_tier@, @speed@, @iterations@ — stay 'Nothing' so a test says
+--- only what it means to say. The prompt count is an argument rather
+--- than an update because @input_tokens@ alone does not name one record
+--- in @claude@ 1.5.0, and a single-field update on it is ambiguous.
+ startUsage :: Natural -> Messages.Usage
+-startUsage inputTokens =
+-  Messages.Usage
+-    { Messages.input_tokens = inputTokens,
+-      Messages.output_tokens = 0,
+-      Messages.cache_creation_input_tokens = Nothing,
+-      Messages.cache_read_input_tokens = Nothing,
+-      Messages.server_tool_use = Nothing,
+-      Messages.inference_geo = Nothing,
+-      Messages.output_tokens_details = Nothing,
+-      Messages.service_tier = Nothing,
+-      Messages.speed = Nothing,
+-      Messages.iterations = Nothing
+-    }
++startUsage input = Messages.Usage input 0 Nothing Nothing Nothing Nothing noUsageEvidence
+
+--- | A @message_delta@ usage reporting output tokens and nothing else,
+--- which is everything a pre-Claude-5 generation sends. Refine it by
+--- record update to model a generation that also repeats the
+--- prompt-side counts.
+-outputOnlyStreamUsage :: Natural -> Messages.StreamUsage
+-outputOnlyStreamUsage n =
+-  Messages.StreamUsage
+-    { Messages.stream_input_tokens = Nothing,
+-      Messages.output_tokens = n,
+-      Messages.stream_cache_creation_input_tokens = Nothing,
+-      Messages.stream_cache_read_input_tokens = Nothing,
+-      Messages.stream_server_tool_use = Nothing,
+-      Messages.stream_output_tokens_details = Nothing,
+-      Messages.stream_iterations = Nothing
+-    }
++outputOnlyStreamUsage :: Natural -> Messages.UsageUpdate
++outputOnlyStreamUsage n = Messages.UsageUpdate Nothing (Just n) Nothing Nothing Nothing Nothing noUsageEvidence
+
+--- | A @message_delta@ event carrying a stop reason and a usage.
+-messageDelta :: Maybe Messages.StopReason -> Messages.StreamUsage -> Messages.MessageStreamEvent
+-messageDelta reason su =
+-  Messages.Message_Delta
+-    { Messages.message_delta =
+-        Messages.MessageDelta
+-          { Messages.stop_reason = reason,
+-            Messages.stop_sequence = Nothing,
+-            Messages.stop_details = Nothing
+-          },
+-      Messages.usage = su
+-    }
++messageDelta :: Maybe Messages.StopReason -> Messages.UsageUpdate -> Messages.StreamPayload
++messageDelta reason = Messages.MessageDelta (Messages.MessageUpdate reason Nothing Nothing Nothing)
+
+--- | A @message_start@ event whose usage is the caller's.
+-messageStartWith :: Messages.Usage -> Messages.MessageStreamEvent
++messageStartWith :: Messages.Usage -> Messages.StreamPayload
+ messageStartWith u =
+-  Messages.Message_Start
+-    { Messages.message =
+-        Messages.MessageResponse
+-          { Messages.id = "msg_test",
+-            Messages.type_ = "message",
+-            Messages.role = Messages.Assistant,
+-            Messages.content = Vector.empty,
+-            Messages.model = "claude-haiku-4-5",
+-            Messages.stop_reason = Nothing,
+-            Messages.stop_sequence = Nothing,
+-            Messages.stop_details = Nothing,
+-            Messages.usage = u,
+-            Messages.container = Nothing
+-          }
+-    }
++  Messages.MessageStart (Messages.MessageResponse "msg_test" "claude-haiku-4-5" Messages.Assistant [] Nothing Nothing u Nothing Nothing mempty)
+
+-runClaudeEvents :: [Messages.MessageStreamEvent] -> ([AssistantMessageEvent], Assembler)
++runClaudeEvents :: [Messages.StreamPayload] -> ([AssistantMessageEvent], Assembler)
+ runClaudeEvents =
+   foldl'
+     ( \(events, ass) ev ->
+@@ -1095,14 +1000,14 @@ terminalMessage events =
+     EventError TerminalPayload {message = msg} -> msg
+     _ -> error "last event was not terminal"
+
+-requestForContext :: Model -> Context -> Options -> IO Messages.CreateMessage
++requestForContext :: Model -> Context -> Options -> IO Messages.MessageRequest
+ requestForContext model ctx opts = fst <$> mappedFor model ctx opts
+
+-requestMessages :: Messages.CreateMessage -> Vector.Vector Messages.Message
+-requestMessages Messages.CreateMessage {Messages.messages = msgs} = msgs
++requestMessages :: Messages.MessageRequest -> Vector.Vector Messages.Message
++requestMessages request = Vector.fromList (Messages.conversationHistory (request ^. #conversation))
+
+-messageContent :: Messages.Message -> Vector.Vector Messages.Content
+-messageContent Messages.Message {Messages.content = blocks} = blocks
++messageContent :: Messages.Message -> Vector.Vector Messages.InputBlock
++messageContent msg = Vector.fromList (NonEmpty.toList (msg ^. #content))
+
+ testTime :: UTCTime
+ testTime = read "2026-07-03 12:00:00 UTC"
+diff --git a/cabal.project b/cabal.project
+index 84e8826..d9e5b2b 100644
+--- a/cabal.project
++++ b/cabal.project
+@@ -13,7 +13,7 @@ packages:
+ -- pinned to ghc9124 / GHC 9.12.4). Add a `with-compiler:` line here if you want
+ -- cabal to fail loudly when the version drifts from the flake.
+ --
+--- All dependencies resolve from Hackage: claude, openai, cradle,
++-- All dependencies resolve from Hackage: claude-hs, openai, cradle,
+ -- hs-opentelemetry-api, hs-opentelemetry-sdk, hs-opentelemetry-exporter-in-memory,
+ -- and the streamly / streamly-core pair (latest released 0.11 / 0.3).
+ test-show-details: direct
+diff --git a/docs/capabilities/anthropic-messages-backend.md b/docs/capabilities/anthropic-messages-backend.md
+index eea10be..6779c8c 100644
+--- a/docs/capabilities/anthropic-messages-backend.md
++++ b/docs/capabilities/anthropic-messages-backend.md
+@@ -65,15 +65,12 @@ Anthropic reports in `message_start`, are what let this transport reach
+ `model_observed` in [CAP-19 — verifiable model-call
+ evidence](model-call-evidence.md).
+
+-From baikai-claude 0.6.0.0 the SDK bound is `claude ^>=1.5`, which makes two
+-response facts readable that 1.4 did not expose. A thinking-token breakdown on
+-`message_start` now fills `Usage.reasoningTokens`, which this provider used to
+-hard-code to `Nothing` for want of anything to read; it is an informational
+-subset of the output tokens, so no total and no cost moves. And the final
+-`message_delta` carries the prompt-side counts, so a call whose prompt grew
+-mid-stream under a server-side tool is accounted for from the counts that ended
+-the call rather than the ones that started it. An absent field still keeps the
+-`message_start` figure rather than zeroing it.
++The HTTP provider uses `mori://shinzui/claude-hs/packages/claude-hs` for
++Messages request encoding, scoped HTTP and typed stream observations.
++A thinking-token breakdown fills `Usage.reasoningTokens` as an informational
++subset of output tokens. Final cumulative prompt-side counts account for
++server-side tool activity. An absent field keeps the earlier observation and
++an explicit zero replaces it.
+
+ This builds on [CAP-1 — provider-neutral model calls with registry
+ dispatch](unified-provider-calls.md).
+diff --git a/mori.dhall b/mori.dhall
+index 8010ecf..2d45b37 100644
+--- a/mori.dhall
++++ b/mori.dhall
+@@ -31,7 +31,10 @@ in  Schema.Project::{
+         , path = Some "baikai-claude"
+         , description = Some
+             "Anthropic Claude providers (API and claude -p CLI) for the Baikai abstraction"
+-        , dependencies = [ Schema.Dependency.ByName "shinzui/baikai:baikai" ]
++        , dependencies =
++          [ Schema.Dependency.ByName "shinzui/baikai:baikai"
++          , Schema.Dependency.ByName "shinzui/claude-hs:claude-hs"
++          ]
+         }
+       , Schema.Package::{
+         , name = "baikai-openai"

@@ -1,0 +1,101 @@
+--- a/baikai-claude/baikai-claude.cabal
++++ b/baikai-claude/baikai-claude.cabal
+@@ -112,2 +112,3 @@
+     EvidenceSpec
++    ParityWireSpec
+     FableContractsSpec
+--- a/baikai-claude/test/Main.hs
++++ b/baikai-claude/test/Main.hs
+@@ -37,2 +37,3 @@
+ import MidStreamSpec qualified
++import ParityWireSpec qualified
+ import PublicSurfaceSpec qualified
+@@ -85,2 +86,3 @@
+         EvidenceSpec.tests,
++        ParityWireSpec.tests,
+         FableContractsSpec.tests,
+--- a/baikai-claude/test/FableContractsSpec.hs
++++ b/baikai-claude/test/FableContractsSpec.hs
+@@ -15,2 +15,3 @@
+ import Data.Aeson qualified as Aeson
++import Data.ByteString.Lazy.Char8 qualified as LBS
+ import Data.Aeson.Key (Key)
+@@ -130,2 +131,3 @@
+         length bodies @?= 3
++        LBS.putStrLn ("PARITY_WIRE " <> Aeson.encode (object ["case" .= ("tool-rounds" :: Text), "bodies" .= bodies]))
+         case bodies of
+--- /dev/null
++++ b/baikai-claude/test/ParityWireSpec.hs
+@@ -0,0 +1,72 @@
++module ParityWireSpec (tests) where
++
++import Baikai
++import Baikai.Models.Generated (anthropic_claude_opus_5, anthropic_claude_sonnet_4_6)
++import Baikai.Provider.Claude.Api (claudeMessagesProvider)
++import Control.Lens ((&), (.~), (^.))
++import Control.Monad (forM_)
++import Data.Aeson (Value, eitherDecode, encode, object, (.=))
++import Data.Aeson.Types (Pair)
++import Data.ByteString.Lazy.Char8 qualified as LBS
++import Data.IORef (modifyIORef', newIORef, readIORef)
++import Data.Text (Text)
++import Data.Text qualified as Text
++import Data.Vector qualified as Vector
++import Network.HTTP.Types (status200)
++import Network.Wai qualified as Wai
++import Network.Wai.Handler.Warp (testWithApplication)
++import Test.Tasty (TestTree)
++import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
++
++tests :: TestTree
++tests = testCase "wire parity snapshots for request and billing evidence" $ do
++  let legacy = anthropic_claude_sonnet_4_6
++      prompt = systemUser "Policy" "Hello"
++      schema = object ["type" .= ("object" :: Text), "additionalProperties" .= False]
++      tools = prompt & #tools .~ Vector.singleton (mkTool "lookup" "Look up a value" schema)
++      opts = emptyOptions & #apiKey .~ Just (ApiKeyLiteral "parity-fixture") & #evidence .~ Just (evidenceRequest "parity")
++      cases =
++        [ ("schema", legacy, prompt, opts & #responseFormat .~ Just (JsonSchema (jsonSchemaFormat "result" schema))),
++          ("tool-choice", legacy, tools, opts & #toolChoice .~ Just (ToolChoiceSpecific "lookup")),
++          ("cached", anthropic_claude_opus_5, tools, opts & #cacheRetention .~ Just CacheRetentionLong),
++          ("sampling", legacy, prompt, opts & #temperature .~ Just 0.2)
++        ]
++  forM_ cases $ \(label, model, ctx, options) -> do
++    bodies <- newIORef []
++    let app req respond = do
++          lookup "anthropic-version" (Wai.requestHeaders req) @?= Just "2023-06-01"
++          body <- Wai.strictRequestBody req >>= either fail pure . eitherDecode
++          modifyIORef' bodies (<> [body :: Value])
++          respond (Wai.responseLBS status200 [("Content-Type", "text/event-stream"), ("request-id", "req_parity")] transcript)
++    result <- testWithApplication (pure app) $ \port -> do
++      let live = model & #baseUrl .~ ("http://127.0.0.1:" <> Text.pack (show port))
++      registry <- newProviderRegistryFrom [claudeMessagesProvider]
++      completeRequestWith registry live ctx options
++    responseError result @?= Nothing
++    evidence <- maybe (assertFailure "no model call evidence" >> fail "evidence") pure (result ^. #evidence)
++    captured <- readIORef bodies
++    case captured of
++      [body] -> do
++        evidence ^. #requestCommitment @?= commitmentDigest body
++        LBS.putStrLn $ "PARITY_WIRE " <> encode (object ["case" .= (label :: Text), "body" .= body, "request" .= (evidence ^. #requestCommitment), "configuration" .= (evidence ^. #requestConfiguration), "response" .= (evidence ^. #responseCommitment)])
++      _ -> assertFailure "expected exactly one dispatch"
++
++transcript :: LBS.ByteString
++transcript =
++  foldMap (\value -> "data: " <> encode value <> "\n\n")
++    [ event "message_start"
++        [ "message" .= event "message"
++            [ "id" .= ("msg_parity" :: Text), "role" .= ("assistant" :: Text), "model" .= ("claude-sonnet-4-6" :: Text),
++              "content" .= ([] :: [Value]),
++              "usage" .= object ["input_tokens" .= (11 :: Int), "output_tokens" .= (0 :: Int), "service_tier" .= ("standard" :: Text), "speed" .= ("standard" :: Text)]
++            ]
++        ],
++      event "content_block_start" ["index" .= (0 :: Int), "content_block" .= event "text" ["text" .= ("" :: Text)]],
++      event "content_block_delta" ["index" .= (0 :: Int), "delta" .= event "text_delta" ["text" .= ("answer" :: Text)]],
++      event "content_block_stop" ["index" .= (0 :: Int)],
++      event "message_delta" ["delta" .= object ["stop_reason" .= ("end_turn" :: Text)], "usage" .= object ["output_tokens" .= (5 :: Int), "output_tokens_details" .= object ["thinking_tokens" .= (2 :: Int)]]],
++      event "message_stop" []
++    ]
++  where
++    event :: Text -> [Pair] -> Value
++    event tag fields = object (("type" .= tag) : fields)

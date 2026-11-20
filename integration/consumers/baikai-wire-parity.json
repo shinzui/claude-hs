@@ -1,0 +1,346 @@
+[
+  {
+    "body": {
+      "cache_control": {
+        "ttl": "1h",
+        "type": "ephemeral"
+      },
+      "max_tokens": 128000,
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "Hello",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "model": "claude-opus-5",
+      "stream": true,
+      "system": [
+        {
+          "cache_control": {
+            "ttl": "1h",
+            "type": "ephemeral"
+          },
+          "text": "Policy",
+          "type": "text"
+        }
+      ],
+      "tools": [
+        {
+          "cache_control": {
+            "ttl": "1h",
+            "type": "ephemeral"
+          },
+          "description": "Look up a value",
+          "input_schema": {
+            "additionalProperties": false,
+            "type": "object"
+          },
+          "name": "lookup"
+        }
+      ]
+    },
+    "case": "cached",
+    "configuration": "sha256:bf432516fd624879b09f4866bc296a71e0320d8c6a9608fd8faa968b389e5c9c",
+    "request": "sha256:1c6aae2ee4ac298ad435e2ae56bab5be6ab304c60d705a0a4750cb2440d8dbfb",
+    "response": {
+      "observed": "sha256:05e221fbadc5315ef61539fda0c5942057c079a6bf7b590b02026b0e546569f2"
+    }
+  },
+  {
+    "body": {
+      "max_tokens": 128000,
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "Hello",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "model": "claude-sonnet-4-6",
+      "stream": true,
+      "system": "Policy",
+      "temperature": 0.2
+    },
+    "case": "sampling",
+    "configuration": "sha256:7ea0cdcc47648a6f32e7e4bbeff3ef68de16cd3f1594017be78ead3b7845c5b3",
+    "request": "sha256:c8f4c01929c8950806efbea049cc531ded2a09edd05027fb1df503868f1b9cc8",
+    "response": {
+      "observed": "sha256:05e221fbadc5315ef61539fda0c5942057c079a6bf7b590b02026b0e546569f2"
+    }
+  },
+  {
+    "body": {
+      "max_tokens": 128000,
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "Hello",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "model": "claude-sonnet-4-6",
+      "output_config": {
+        "format": {
+          "schema": {
+            "additionalProperties": false,
+            "type": "object"
+          },
+          "type": "json_schema"
+        }
+      },
+      "stream": true,
+      "system": "Policy"
+    },
+    "case": "schema",
+    "configuration": "sha256:b53313cb3eba2fa9c427f823783838b3afff67fde37fabce6ba50b8e5fe5c53e",
+    "request": "sha256:6ff966774fa21f3efafca404b10a3308824af2be1f21558800eb90e0ed2b41f8",
+    "response": {
+      "observed": "sha256:05e221fbadc5315ef61539fda0c5942057c079a6bf7b590b02026b0e546569f2"
+    }
+  },
+  {
+    "body": {
+      "max_tokens": 128000,
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "Hello",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "model": "claude-sonnet-4-6",
+      "stream": true,
+      "system": "Policy",
+      "tool_choice": {
+        "name": "lookup",
+        "type": "tool"
+      },
+      "tools": [
+        {
+          "description": "Look up a value",
+          "input_schema": {
+            "additionalProperties": false,
+            "type": "object"
+          },
+          "name": "lookup"
+        }
+      ]
+    },
+    "case": "tool-choice",
+    "configuration": "sha256:6fc829dd8c405f1e5ba5cb0d7f36992b352ef831a1bb21903371d2edec9e25be",
+    "request": "sha256:d888c5dafa19074eb62262b26028fa94382e90492f4ca43162f8620efda0b387",
+    "response": {
+      "observed": "sha256:05e221fbadc5315ef61539fda0c5942057c079a6bf7b590b02026b0e546569f2"
+    }
+  },
+  {
+    "bodies": [
+      {
+        "max_tokens": 128000,
+        "messages": [
+          {
+            "content": [
+              {
+                "text": "look twice",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model": "claude-fable-5-1",
+        "output_config": {
+          "effort": "low"
+        },
+        "stream": true,
+        "system": "unchanged system",
+        "thinking": {
+          "display": "summarized",
+          "type": "adaptive"
+        },
+        "tools": [
+          {
+            "description": "lookup",
+            "input_schema": {
+              "type": "object"
+            },
+            "name": "lookup"
+          }
+        ]
+      },
+      {
+        "max_tokens": 128000,
+        "messages": [
+          {
+            "content": [
+              {
+                "text": "look twice",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "signature": "sig-one",
+                "thinking": "",
+                "type": "thinking"
+              },
+              {
+                "data": "encrypted-redacted",
+                "type": "redacted_thinking"
+              },
+              {
+                "id": "toolu_1",
+                "input": {},
+                "name": "lookup",
+                "type": "tool_use"
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "content": [
+              {
+                "content": "found",
+                "is_error": false,
+                "tool_use_id": "toolu_1",
+                "type": "tool_result"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model": "claude-fable-5-1",
+        "output_config": {
+          "effort": "low"
+        },
+        "stream": true,
+        "system": "unchanged system",
+        "thinking": {
+          "display": "summarized",
+          "type": "adaptive"
+        },
+        "tools": [
+          {
+            "description": "lookup",
+            "input_schema": {
+              "type": "object"
+            },
+            "name": "lookup"
+          }
+        ]
+      },
+      {
+        "max_tokens": 128000,
+        "messages": [
+          {
+            "content": [
+              {
+                "text": "look twice",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "signature": "sig-one",
+                "thinking": "",
+                "type": "thinking"
+              },
+              {
+                "data": "encrypted-redacted",
+                "type": "redacted_thinking"
+              },
+              {
+                "id": "toolu_1",
+                "input": {},
+                "name": "lookup",
+                "type": "tool_use"
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "content": [
+              {
+                "content": "found",
+                "is_error": false,
+                "tool_use_id": "toolu_1",
+                "type": "tool_result"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "signature": "sig-two",
+                "thinking": "visible summary",
+                "type": "thinking"
+              },
+              {
+                "id": "toolu_2",
+                "input": {},
+                "name": "lookup",
+                "type": "tool_use"
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "content": [
+              {
+                "content": "found",
+                "is_error": false,
+                "tool_use_id": "toolu_2",
+                "type": "tool_result"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model": "claude-fable-5-1",
+        "output_config": {
+          "effort": "low"
+        },
+        "stream": true,
+        "system": "unchanged system",
+        "thinking": {
+          "display": "summarized",
+          "type": "adaptive"
+        },
+        "tools": [
+          {
+            "description": "lookup",
+            "input_schema": {
+              "type": "object"
+            },
+            "name": "lookup"
+          }
+        ]
+      }
+    ],
+    "case": "tool-rounds"
+  }
+]

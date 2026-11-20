@@ -22,6 +22,11 @@ provenance:
       at: 2026-11-20T22:03:12Z
       mode: "update"
       note: "Align both downstream trial pins and require a clean build of the adopted Baikai commit."
+    - model: "gpt-6.2-sol"
+      harness: "codex-cli"
+      at: 2026-11-20T22:43:36Z
+      mode: "implement"
+      note: "Migrate and qualify the typed Baikai adapter."
 ---
 
 # Remove the Mercury Claude dependency from Baikai
@@ -37,17 +42,25 @@ Baikai's public Claude HTTP provider builds against `claude-hs` alone for the An
 
 ## Progress
 
-- [ ] A clean Baikai checkout switches request mapping and event assembly to the candidate, and the full provider suite builds and passes with Mercury absent from imports and the resolved dependency graph.
-- [ ] The pinned downstream cohort passes against that Mercury-free adapter, and the migration patch and release prerequisites are reproducible from fresh checkouts.
+- [x] (2026-11-20) A clean Baikai checkout switches request mapping and event assembly to the candidate, and the full provider suite builds and passes with Mercury absent from imports and the resolved dependency graph.
+- [x] (2026-11-20) Both pinned cohorts passed. Fresh clones reproduced the migration patch and the provider suite, and the solver evidence records the candidate dependency edge.
 - [ ] The adopted Baikai commit passes the full provider suite from a clean checkout using its normal dependency source for `claude-hs`. Its resolved plan contains no Mercury `claude`.
 
 ## Surprises & Discoveries
 
 The transport-only patch applied cleanly in a disposable checkout of `mori://shinzui/baikai/repos/baikai` at `87481ea7ff867a37bf602b0dc1ac8caa9e2e2710`. Its own locked shell passed all 475 provider tests. The plan contained both packages, so this is the migration baseline. It exercised both public call paths, signed tool turns and live socket cancellation with synthetic credentials.
 
+The local Mercury-free provider passed all 475 tests, including a 2026-10-21 override that rejects sampling before dispatch. The baseline and migrated [wire snapshots](../../integration/consumers/baikai-wire-parity.json) matched for the schema, named tool, cache, legacy sampling and signed tool-round fixtures. Four also matched the request, configuration and response commitments.
+
+The clean adoption gate depends on a Hackage release. A separate fresh Baikai solver run with its checked-in sources reported `unknown package: claude-hs`. Hackage returned HTTP 404 and `cabal check` reported that Hackage would reject the package because its license is missing. [FRIC-3](../friction-log/3-baikai-s-hackage-dependency-source-cannot-resolve-claude-hs.md)
+
 ## Decision Log
 
+2026-11-20. Keep the adapter migration reproducible from the pinned Baikai base while the normal-source release is pending. The migration patch does not introduce a checkout-local path into Baikai's checked-in project.
+
 ## Outcomes & Retrospective
+
+The [adapter patch and trial procedure](../../integration/consumers/README.md) reproduced the Mercury-free path. The [Cabal evidence](../../integration/consumers/resolved-mercury-parity.json) records 475 Baikai, 301 Shikumi and 820 Shikigami passing tests in the migrated cohort. Shikumi retained structured 429 details and Shikigami recorded one attempt per dispatch for success, failure and cancellation. Final adoption awaits the first release.
 
 ## Context and Orientation
 

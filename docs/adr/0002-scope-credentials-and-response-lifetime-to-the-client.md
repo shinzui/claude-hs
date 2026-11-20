@@ -9,3 +9,11 @@ Share one HTTP runner across unary, SSE and batch results. The runner brackets t
 Integrators with multiple credential bindings can share a `ClientPool` while creating separate endpoint-scoped clients. Preserve the HTTP Date alongside Retry-After so the caller can interpret HTTP-date delays against the server clock. Bound and redact error excerpts while retaining status and correlation metadata.
 
 Derive the batch results route from the original client origin and a validated batch ID. Expose the advertised results URL as metadata.
+
+In the Baikai migration, `mori://shinzui/claude-hs/packages/claude-hs`
+owns request encoding, connection pooling, SSE framing and typed event
+decoding. `mori://shinzui/baikai/packages/baikai-claude` owns model and
+host policy, cache and schema shaping, the selected wire version, error
+classification and the whole-call timeout. Baikai translates the typed
+client events into its stable provider contract. Its public complete and
+stream paths use the same terminal evidence and cancellation behavior.

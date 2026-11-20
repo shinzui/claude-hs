@@ -1,0 +1,16 @@
+diff --git a/cabal.project b/cabal.project
+index b0cb2c2e..364013b3 100644
+--- a/cabal.project
++++ b/cabal.project
+@@ -43,9 +43,9 @@ index-state: 2026-11-12T17:25:33Z
+ -- Preserve the qualified runtime closure while adding released Baikai surfaces.
+ constraints:
+   keiro-dsl ==0.22.0.0,
+-  baikai ==0.10.1.0,
++  baikai ==0.10.1.1,
+   baikai-claude ==0.7.3.0,
+-  baikai-openai ==0.7.3.0,
++  baikai-openai ==0.7.3.1,
+   baikai-agent ==0.2.0.4,
+   Diff ==1.0.2,
+   HUnit ==1.6.2.0,

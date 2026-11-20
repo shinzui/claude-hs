@@ -50,7 +50,7 @@ Compare against the released Hackage sources for `Claude.V1`, `Claude.V1.Error`,
 |---|---|---|---|---|---|
 | EP-6 | Complete Claude Messages request and tool feature coverage | [6-complete-claude-messages-request-and-tool-feature-coverage.md](../plans/6-complete-claude-messages-request-and-tool-feature-coverage.md) | None | None | Complete |
 | EP-7 | Preserve advanced Claude response and streaming evidence | [7-preserve-advanced-claude-response-and-streaming-evidence.md](../plans/7-preserve-advanced-claude-response-and-streaming-evidence.md) | Two-turn fixture only: EP-6 continuation inputs milestone | None | Complete |
-| EP-8 | Remove the Mercury Claude dependency from Baikai | [8-remove-the-mercury-claude-dependency-from-baikai.md](../plans/8-remove-the-mercury-claude-dependency-from-baikai.md) | EP-6, EP-7 | None | Not Started |
+| EP-8 | Remove the Mercury Claude dependency from Baikai | [8-remove-the-mercury-claude-dependency-from-baikai.md](../plans/8-remove-the-mercury-claude-dependency-from-baikai.md) | EP-6, EP-7 | None | In Progress |
 
 ## Dependency Graph
 
@@ -64,11 +64,15 @@ EP-8 owns the migration patch, downstream regressions and final adoption in Baik
 
 ## Progress
 
-The endpoint and transport baseline has already passed. On 2026-11-20 the transport-only patch applied cleanly to `mori://shinzui/baikai/repos/baikai` at `87481ea7ff867a37bf602b0dc1ac8caa9e2e2710` and all 475 provider tests passed in that checkout's locked shell. The resolved plan selected both local `claude-hs` and Hackage `claude` 1.5.0. Request and response parity passed the locked-shell producer suite and the [pinned Baikai projections](../../integration/consumers/baikai-parity-projections.patch). The two-turn Messages fixtures captured PTC and fallback history through the public encoder. The Mercury-free cohort trial and clean Baikai adoption build remain open.
+The request and response plans passed the locked-shell producer suite, representative Baikai comparisons and both two-turn continuation fixtures. The pinned Mercury-free cohort passed 475 Baikai, 301 Shikumi and 820 Shikigami tests. The [Cabal evidence](../../integration/consumers/resolved-mercury-parity.json) confirms that the provider selected `claude-hs` and the resolved closure contains zero Mercury packages.
+
+EP-8 remains open for a published package and the clean build of the Baikai adoption commit.
 
 ## Surprises & Discoveries
 
-Baikai currently uses five production modules that import Mercury types. Its mapper and stream assembler use fields missing from the candidate's typed API, including legacy sampling on eligible models, detailed refusals, reasoning counts, service tier and speed. The checked-in adapter trial migrates transport and keeps Mercury in both its mapping and its event projection.
+The transport-only baseline retained Mercury in its mapper and stream assembler. The migrated adapter uses the new request encoder and stream decoder, and its five [wire snapshots](../../integration/consumers/baikai-wire-parity.json) match the baseline, including signed and redacted tool rounds.
+
+The clean Baikai adoption check requires a Hackage `claude-hs` release. The package is absent and the new source has no declared license, which Cabal treats as a publication error. The local-source trial remains reproducible independently of release availability. [FRIC-3](../friction-log/3-baikai-s-hackage-dependency-source-cannot-resolve-claude-hs.md)
 
 ## Decision Log
 

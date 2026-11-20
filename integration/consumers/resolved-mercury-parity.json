@@ -1,0 +1,101 @@
+{
+  "revisions": {
+    "mori://shinzui/baikai/repos/baikai": "87481ea7ff867a37bf602b0dc1ac8caa9e2e2710",
+    "mori://shinzui/shikumi/repos/shikumi": "4fec9169d97a85f5e0e38246347f6c70ef555d7e",
+    "mori://shinzui/shikigami/repos/shikigami": "d9d18d23b456f25a6b507a60514bcd90e796392b",
+    "mori://shinzui/claude-hs/repos/claude-hs": "6a2eb43f6eeaa39e8b178ad6efc105e877a5e0d6"
+  },
+  "baselineCohort": {
+    "compiler": "ghc-9.12.4",
+    "cabal": "3.16.1.0",
+    "packages": {
+      "baikai": {
+        "version": "0.10.1.1",
+        "source": "local"
+      },
+      "baikai-claude": {
+        "version": "0.7.3.0",
+        "source": "local"
+      },
+      "baikai-openai": {
+        "version": "0.7.3.1",
+        "source": "local"
+      },
+      "claude-hs": {
+        "version": "0.1.0.0",
+        "source": "local"
+      },
+      "claude": {
+        "version": "1.5.0",
+        "source": "repo-tar"
+      }
+    },
+    "providerClientLibraries": [
+      "claude",
+      "claude-hs"
+    ],
+    "tests": {
+      "baikai-claude-test": 477,
+      "shikumi-test": 301,
+      "shikigami-core-test": 820
+    }
+  },
+  "migratedCohort": {
+    "compiler": "ghc-9.12.4",
+    "cabal": "3.16.1.0",
+    "packages": {
+      "baikai": {
+        "version": "0.10.1.1",
+        "source": "local"
+      },
+      "baikai-claude": {
+        "version": "0.7.3.0",
+        "source": "local"
+      },
+      "baikai-openai": {
+        "version": "0.7.3.1",
+        "source": "local"
+      },
+      "claude-hs": {
+        "version": "0.1.0.0",
+        "source": "local"
+      }
+    },
+    "providerClientLibraries": [
+      "claude-hs"
+    ],
+    "tests": {
+      "shikumi-test": 301,
+      "baikai-claude-test": 475,
+      "shikigami-core-test": 820
+    }
+  },
+  "freshPatchedBaikai": {
+    "compiler": "ghc-9.12.4",
+    "cabal": "3.16.1.0",
+    "packages": {
+      "baikai": {
+        "version": "0.10.1.1",
+        "source": "local"
+      },
+      "baikai-claude": {
+        "version": "0.7.3.0",
+        "source": "local"
+      },
+      "baikai-openai": {
+        "version": "0.7.3.1",
+        "source": "local"
+      },
+      "claude-hs": {
+        "version": "0.1.0.0",
+        "source": "local"
+      }
+    },
+    "providerClientLibraries": [
+      "claude-hs"
+    ],
+    "tests": {
+      "baikai-claude-test": 475
+    }
+  }
+}

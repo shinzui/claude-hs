@@ -15,7 +15,7 @@ index 31c5ef3..360870e 100644
 @@ -1,3 +1,4 @@
 +{-# LANGUAGE LambdaCase #-}
  module ShapeSpec (tests) where
- 
+
  import Baikai
 @@ -5,15 +6,23 @@ import Baikai.Models.Generated qualified as Models
  import Baikai.Provider.Claude.Internal.Request (describeThinkingFor, mapRequest)
@@ -40,7 +40,7 @@ index 31c5ef3..360870e 100644
 +import Network.Wai.Handler.Warp (testWithApplication)
  import Test.Tasty (TestTree, testGroup)
  import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
- 
+
 @@ -24,6 +33,7 @@ tests =
      [ testCase "server-side fallbacks stay absent from the request" $ do
          value <- shapedBody Models.anthropic_claude_opus_5 emptyContext emptyOptions
@@ -100,7 +100,7 @@ index 56ceba4..14c290a 100644
 @@ -1,3 +1,4 @@
 +{-# LANGUAGE OverloadedRecordDot #-}
  module SseSpec (tests) where
- 
+
  import Baikai
 @@ -11,6 +12,8 @@ import Baikai.Provider.Claude.Sse
      sseFromResponse,
