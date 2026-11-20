@@ -18,4 +18,4 @@ Use `Claude.Streaming.streamMessage` for SSE. The callback receives typed events
 
 Use `Claude.Batches` to submit, retrieve, list and cancel asynchronous batches. `consumeBatchResults` reads JSON Lines incrementally from the configured origin. Correlate outcomes with the original custom IDs.
 
-The [downstream trial](integration/consumers/README.md) contains the Baikai adapter patch, fixtures and pinned Cabal configuration for Baikai, Shikumi and Shikigami.
+The [downstream trial](https://github.com/shinzui/claude-hs/blob/master/integration/consumers/README.md) contains the Baikai adapter patch, fixtures and pinned Cabal configuration for Baikai, Shikumi and Shikigami.

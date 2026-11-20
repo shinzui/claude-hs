@@ -4,11 +4,22 @@ version: 0.1.0.0
 synopsis: Client for the Anthropic Claude Messages API
 description: Typed client for the direct Anthropic Messages API.
 category: Network
+license: MIT
+license-file: LICENSE
+author: Nadeem Bitar
+maintainer: Nadeem Bitar
+homepage: https://github.com/shinzui/claude-hs
+bug-reports: https://github.com/shinzui/claude-hs/issues
 build-type: Simple
 tested-with: ghc ==9.12.4
 extra-doc-files:
+  CHANGELOG.md
   README.md
   docs/messages-coverage.md
+
+source-repository head
+  type: git
+  location: https://github.com/shinzui/claude-hs
 
 common common
   default-language: GHC2024
