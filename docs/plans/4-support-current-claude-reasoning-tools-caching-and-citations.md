@@ -10,6 +10,12 @@ provenance:
     model: "gpt-6.2-astra"
     harness: "codex-cli"
     at: 2026-11-20T19:36:44Z
+  revisions:
+    - model: "gpt-6.2-astra"
+      harness: "codex-cli"
+      at: 2026-11-20T20:25:29Z
+      mode: "update"
+      note: "Use the Seihou-generated Nix development shell for client builds and tests."
 ---
 
 # Support current Claude reasoning, tools, caching and citations
@@ -55,11 +61,11 @@ Inventory the fields actually emitted by the Baikai Claude provider before freez
 
 ## Concrete Steps
 
-From the repository root, with GHC 9.12 or newer and cabal-install available, run the following after each milestone. The library must build and the local test suite must report PASS with no Anthropic key in the environment.
+From the repository root, build and test each client milestone in the locked development shell provided by EP-1. See the [tooling ADR](../adr/0001-bootstrap-haskell-tooling-with-seihou.md). The library must build and the local test suite must report PASS with no Anthropic key in the environment.
 
 ```bash
-cabal build all
-cabal test all --test-show-details=direct
+nix develop --no-write-lock-file -c cabal build all
+nix develop --no-write-lock-file -c cabal test all --test-show-details=direct
 ```
 
 ## Validation and Acceptance
