@@ -6,7 +6,7 @@ generated:
   by: "codex-cli/gpt-6.2-sol"
   at: "2026-11-20T20:55:43Z"
 frictionId: FRIC-1
-status: "accepted"
+status: "resolved"
 impact: detour
 kind: tooling
 origin: "mori://shinzui/claude-hs"
@@ -14,11 +14,14 @@ affects: "mori://shinzui/seihou-modules/templates/nix-haskell-flake"
 affectedVersion: "0.40.0"
 plan: "docs/plans/1-send-messages-and-count-input-tokens.md"
 workaround: "Keep the generated file byte-identical to the baseline and exclude that path from the Nix formatter in flake.module.nix."
-resolution: "Keep the generated template at its Seihou baseline with a single formatter exclusion in the project-owned flake module."
+resolution: "mori://shinzui/seihou-modules/templates/nix-haskell-flake 0.40.1 generates nix/haskell.nix in the treefmt layout and preserves the Seihou baseline."
 amended:
   - by: "codex-cli/gpt-6.2-sol"
     at: "2026-11-20T20:56:45Z"
     change: "Verified the exclusion and repeated the Seihou preview."
+  - by: "codex-cli/gpt-6.2-sol"
+    at: "2026-11-20T23:11:54Z"
+    change: "Upgraded claude-hs to 0.40.1 and removed the local exclusion. Treefmt changed zero files and the Seihou update preview was a no-op."
 ---
 # The generated Haskell flake conflicts after its own formatter runs
 
