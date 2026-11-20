@@ -12,10 +12,10 @@ import Network.Wai qualified as Wai
 import Support.Server
 
 baseConversation :: Conversation
-baseConversation = Conversation "candidate-model" (Message User (InputText "Hello" :| []) :| []) Nothing
+baseConversation = Conversation "candidate-model" (Message User (InputText "Hello" :| []) :| []) Nothing defaultMessageFeatures
 
 sampleRequest :: Conversation -> IO MessageRequest
-sampleRequest convo = maybe (fail "internal fixture limit") (pure . MessageRequest convo) (maxTokens 256)
+sampleRequest convo = maybe (fail "internal fixture limit") (\limit -> pure (MessageRequest convo limit [])) (maxTokens 256)
 
 messageFixture :: [Value] -> Value
 messageFixture blocks =
@@ -67,7 +67,10 @@ textRoundtrip = do
   withClient app $ \client -> do
     Response meta response <- createMessage client options request >>= expectRight
     assertEqual "request ID" (Just "req_1") (requestId meta)
-    assertEqual "typed message" (MessageResponse "msg_1" "candidate-model" Assistant [OutputText "Hi", UnknownBlock "future" future] (Just EndTurn) Nothing (Usage 17 8)) response
+    let MessageResponse messageId modelId sender blocks reason matchedStop counters = response
+    assertEqual "typed message metadata" ("msg_1", "candidate-model", Assistant, Just EndTurn, Nothing, Usage 17 8 Nothing Nothing Nothing Nothing) (messageId, modelId, sender, reason, matchedStop, counters)
+    assertEqual "typed blocks" [OutputText "Hi" Nothing, UnknownBlock "future"] (map blockContent blocks)
+    assertEqual "unknown block payload" [future] (drop 1 (map blockJSON blocks))
     createMessage client (options {extraHeaders = [("HOST", "wrong-host")]}) request >>= \case
       Left (InvalidRequest _) -> pure ()
       _ -> fail "Host override must be rejected"
@@ -79,7 +82,7 @@ tokensRoundtrip = do
           :| [ Message Assistant (InputText "Welcome" :| []),
                Message User (InputImage (Base64Image "image/png" "aW1hZ2U=") :| [InputImage (ImageUrl "https://example.test/image.png")])
              ]
-      convo = Conversation "candidate-model" history (Just "Use the image.")
+      convo = Conversation "candidate-model" history (Just (SystemText "Use the image.")) defaultMessageFeatures
       app req send = do
         assertEqual "count method" "POST" (Wai.requestMethod req)
         assertEqual "count path" "/v1/messages/count_tokens" (Wai.rawPathInfo req)

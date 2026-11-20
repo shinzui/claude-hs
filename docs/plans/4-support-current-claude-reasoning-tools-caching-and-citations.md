@@ -16,6 +16,11 @@ provenance:
       at: 2026-11-20T20:25:29Z
       mode: "update"
       note: "Use the Seihou-generated Nix development shell for client builds and tests."
+    - model: "gpt-6.2-sol"
+      harness: "codex-cli"
+      at: 2026-11-20T20:35:46Z
+      mode: "implement"
+      note: "Extend the shared Messages codecs and verify feature replay over HTTP."
 ---
 
 # Support current Claude reasoning, tools, caching and citations
@@ -32,8 +37,8 @@ A caller can request schema-constrained output, use signed adaptive thinking acr
 
 ## Progress
 
-- [ ] Schema output, strict client tools and signed adaptive thinking pass two-turn HTTP fixtures.
-- [ ] Cache accounting, document citations and a versioned server tool roundtrip preserve provider evidence.
+- [x] 2026-11-20. The loopback suite verified schema-only and tool-only requests, schema with effort, the count projection, and two consecutive tool rounds with empty, visible and redacted thinking.
+- [x] 2026-11-20. The fixtures verified automatic and explicit cache controls, both cache counters, and original document and web citation evidence on replay.
 
 ## Surprises & Discoveries
 
@@ -44,6 +49,8 @@ A caller can request schema-constrained output, use signed adaptive thinking acr
 
 
 ## Outcomes & Retrospective
+
+The library and example built with GHC 9.12.4. The loopback suite passed with the key unset, including a refusal, a malformed known thinking block and an unknown server result. The [content replay ADR](../adr/0003-preserve-provider-content-for-assistant-replay.md) records the shared codec and scope. [Messages coverage](../messages-coverage.md) records feature restrictions and the migration audit for removed sampling fields.
 
 
 

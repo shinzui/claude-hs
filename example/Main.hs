@@ -12,7 +12,7 @@ main = do
   client <- newClient (defaultClientConfig key) >>= either (fail . show) pure
   limit <- maybe (fail "Expected a positive output limit") pure (maxTokens 256)
   let prompt = Message User (InputText "Name three colors." :| [])
-      request = MessageRequest (Conversation "claude-sonnet-4-6" (prompt :| []) Nothing) limit
+      request = MessageRequest (Conversation "claude-sonnet-4-6" (prompt :| []) Nothing defaultMessageFeatures) limit []
   createMessage client defaultRequestOptions request >>= \case
     Left err -> fail (show err)
     Right (Response _ result) -> print result
