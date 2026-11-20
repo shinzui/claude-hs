@@ -1,0 +1,16 @@
+name: CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  cabal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/determinate-nix-action@v3
+      - run: nix develop --accept-flake-config --no-write-lock-file -c cabal update
+      - run: nix develop --accept-flake-config --no-write-lock-file -c cabal build all
+      - run: nix develop --accept-flake-config --no-write-lock-file -c cabal test all --test-show-details=direct

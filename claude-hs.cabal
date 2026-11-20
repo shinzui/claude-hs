@@ -1,0 +1,67 @@
+cabal-version: 3.4
+name: claude-hs
+version: 0.1.0.0
+synopsis: Client for the Anthropic Claude Messages API
+description: Typed client for the direct Anthropic Messages API.
+category: Network
+build-type: Simple
+tested-with: ghc ==9.12.4
+extra-doc-files: README.md
+
+common common
+  default-language: GHC2024
+  default-extensions:
+    DeriveAnyClass
+    DuplicateRecordFields
+    OverloadedLabels
+    OverloadedStrings
+
+  ghc-options: -Wall
+  build-depends: base >=4.21 && <5
+
+library
+  import: common
+  hs-source-dirs: src
+  exposed-modules:
+    Claude.Client
+    Claude.Messages
+
+  other-modules: Claude.Internal.Http
+  build-depends:
+    aeson >=2.2 && <2.4,
+    bytestring >=0.12 && <0.13,
+    generic-lens >=2.2 && <2.4,
+    http-client >=0.7.18 && <0.8,
+    http-client-tls >=0.3.6 && <0.5,
+    http-types >=0.12 && <0.13,
+    lens >=5.2 && <5.4,
+    text >=2.1 && <2.2,
+    transformers >=0.6 && <0.7,
+
+executable claude-message-example
+  import: common
+  hs-source-dirs: example
+  main-is: Main.hs
+  build-depends:
+    bytestring,
+    claude-hs,
+    text,
+
+test-suite claude-hs-test
+  import: common
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: Main.hs
+  other-modules:
+    MessagesSpec
+    Support.Server
+
+  ghc-options: -threaded
+  build-depends:
+    aeson,
+    bytestring,
+    claude-hs,
+    http-types,
+    text,
+    wai >=3.2 && <3.3,
+    warp >=3.3 && <3.6,

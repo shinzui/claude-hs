@@ -37,9 +37,9 @@ A Haskell caller can send a conversation to Claude and estimate its input tokens
 
 ## Progress
 
-- [x] 2026-11-20. Seihou generated the locked flake. The shell reported GHC 9.12.4 and Cabal 3.16.1.0.
-- [ ] A typed text conversation completes over HTTP and preserves response metadata and failures.
-- [ ] Token counting and multi-turn image/text fixtures pass through the same public client.
+- [x] 2026-11-20. Seihou generated the locked flake. The shell reported GHC 9.12.4 and Cabal 3.16.1.0 in the working tree and from a detached clean checkout of the bootstrap commit.
+- [x] 2026-11-20. The text roundtrip, Baikai-style session affinity and beta header capture, and HTTP failure fixtures passed.
+- [x] 2026-11-20. The count route returned 17 input tokens and the captured history included text, base64 and URL image blocks without an output limit.
 
 ## Surprises & Discoveries
 
@@ -52,6 +52,8 @@ A Haskell caller can send a conversation to Claude and estimate its input tokens
 
 
 ## Outcomes & Retrospective
+
+The locked shell built the library and example, then passed the loopback suite with the Anthropic key unset. The fixture observed one dispatch per operation, including a disconnected POST and redirect. The [HTTP boundary ADR](../adr/0002-scope-credentials-and-response-lifetime-to-the-client.md) records ownership of credentials, the response and retries.
 
 
 
