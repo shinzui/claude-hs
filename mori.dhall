@@ -21,6 +21,15 @@ in  Schema.Project::{
         , localPath = Some "."
         }
       ]
+    , okfBundles =
+      [ Schema.OkfBundle::{
+        , name = "friction-log"
+        , path = "docs/friction-log"
+        , okfVersion = "0.2"
+        , profile = Some "docs/friction-log/profile.dhall"
+        , description = Some "Friction met while implementing plans, before triage into bug reports and requests"
+        }
+      ]
     , standardRefs =
       [ Schema.MoriRef::{ namespace = "shinzui", name = "haskell-jitsurei" } ]
     }

@@ -14,3 +14,7 @@ jobs:
       - run: nix develop --accept-flake-config --no-write-lock-file -c cabal update
       - run: nix develop --accept-flake-config --no-write-lock-file -c cabal build all
       - run: nix develop --accept-flake-config --no-write-lock-file -c cabal test all --test-show-details=direct
+      - run: >-
+          nix run --accept-flake-config --no-write-lock-file --inputs-from . okf#okf-cli --
+          validate docs/friction-log --strict --profile docs/friction-log/profile.dhall
+          --profile-enforce --log-enforce

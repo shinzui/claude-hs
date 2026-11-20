@@ -43,6 +43,8 @@ A Haskell caller can send a conversation to Claude and estimate its input tokens
 
 ## Surprises & Discoveries
 
+The generated formatter rewrote one Seihou-owned Nix file and the next generator preview reported a conflict. See [FRIC-1](../friction-log/1-the-generated-haskell-flake-conflicts-after-its-own-formatter-runs.md).
+
 
 
 ## Decision Log
@@ -53,7 +55,7 @@ A Haskell caller can send a conversation to Claude and estimate its input tokens
 
 ## Outcomes & Retrospective
 
-The locked shell built the library and example, then passed the loopback suite with the Anthropic key unset. The fixture observed one dispatch per operation, including a disconnected POST and redirect. The [HTTP boundary ADR](../adr/0002-scope-credentials-and-response-lifetime-to-the-client.md) records ownership of credentials, the response and retries.
+The locked shell built the library and example, then passed the loopback suite with the Anthropic key unset. The fixture observed one dispatch per operation, including a disconnected POST and redirect. FRIC-1 was accepted with a project-local formatter exclusion that preserves the template baseline. The [HTTP boundary ADR](../adr/0002-scope-credentials-and-response-lifetime-to-the-client.md) records ownership of credentials, the response and retries.
 
 
 
