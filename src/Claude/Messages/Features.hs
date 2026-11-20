@@ -2,6 +2,11 @@
 module Claude.Messages.Features
   ( MessageFeatures (..),
     defaultMessageFeatures,
+    RequestControls (..),
+    defaultRequestControls,
+    Compaction (..),
+    Fallbacks (..),
+    FallbackModel (..),
     OutputConfig (..),
     Effort (..),
     Speed (..),
@@ -14,6 +19,12 @@ module Claude.Messages.Features
     Document (..),
     Tool (..),
     ClientTool (..),
+    ToolLoading (..),
+    AllowedCaller (..),
+    ToolCaller (..),
+    ToolSearch (..),
+    CodeExecutionVersion (..),
+    ToolChangeReference (..),
     WebSearch (..),
     WebSearchVersion (..),
     ToolChoice (..),
@@ -30,11 +41,13 @@ module Claude.Messages.Features
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Lens ((^.))
-import Data.Aeson (FromJSON (..), Key, Object, ToJSON (..), Value (..), object, withArray, withObject, (.:), (.:?), (.=))
-import Data.Aeson.Types (Pair)
+import Data.Aeson (FromJSON (..), Key, Object, ToJSON (..), Value (..), object, withArray, withObject, withText, (.!=), (.:), (.:?), (.=))
+import Data.Aeson.Types (Pair, Parser)
 import Data.Foldable (toList)
 import Data.Generics.Labels ()
+import Data.Map.Strict (Map)
 import Data.Text (Text)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
@@ -53,6 +66,61 @@ data MessageFeatures = MessageFeatures
 defaultMessageFeatures :: MessageFeatures
 defaultMessageFeatures = MessageFeatures Nothing Nothing Nothing [] Nothing Nothing
 
+-- | Generation controls are excluded from the token-count projection.
+data RequestControls = RequestControls
+  { temperature :: !(Maybe Double),
+    topP :: !(Maybe Double),
+    topK :: !(Maybe Natural),
+    metadata :: !(Maybe (Map Text Text)),
+    containerId :: !(Maybe Text),
+    contextManagement :: !(Maybe [Compaction]),
+    inferenceGeo :: !(Maybe Text),
+    fallbacks :: !(Maybe Fallbacks)
+  }
+  deriving stock (Eq, Show, Generic)
+
+defaultRequestControls :: RequestControls
+defaultRequestControls = RequestControls Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
+
+data Compaction = Compaction
+  { instructions :: !(Maybe Text),
+    pauseAfterCompaction :: !(Maybe Bool),
+    inputTokensTrigger :: !(Maybe Natural)
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON Compaction where
+  toJSON (Compaction instructions_ pause trigger) =
+    tagged "compact_20260112" $
+      optional "instructions" instructions_
+        <> optional "pause_after_compaction" pause
+        <> ["trigger" .= tagged "input_tokens" ["value" .= tokens] | Just tokens <- [trigger]]
+
+data Fallbacks = DefaultFallbacks | FallbackModels ![FallbackModel]
+  deriving stock (Eq, Show)
+
+data FallbackModel = FallbackModel
+  { model :: !Text,
+    fallbackMaxTokens :: !(Maybe Natural),
+    outputConfig :: !(Maybe OutputConfig),
+    speed :: !(Maybe Speed),
+    thinking :: !(Maybe Thinking)
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance ToJSON Fallbacks where
+  toJSON DefaultFallbacks = "default"
+  toJSON (FallbackModels models) = toJSON models
+
+instance ToJSON FallbackModel where
+  toJSON (FallbackModel ident limit output speed_ thinking_) =
+    object $
+      ["model" .= ident]
+        <> optional "max_tokens" limit
+        <> optional "output_config" output
+        <> optional "speed" speed_
+        <> optional "thinking" thinking_
+
 data Speed = Standard | Fast
   deriving stock (Eq, Show)
 
@@ -60,7 +128,7 @@ instance ToJSON Speed where
   toJSON Standard = "standard"
   toJSON Fast = "fast"
 
-data Effort = Low | Medium | High | ExtraHigh | Maximum
+data Effort = Low | Medium | High | ExtraHigh | Maximum | VersionedEffort !Text
   deriving stock (Eq, Show)
 
 instance ToJSON Effort where
@@ -69,6 +137,7 @@ instance ToJSON Effort where
   toJSON High = "high"
   toJSON ExtraHigh = "xhigh"
   toJSON Maximum = "max"
+  toJSON (VersionedEffort value) = toJSON value
 
 data OutputConfig = OutputConfig
   { effort :: !(Maybe Effort),
@@ -147,7 +216,13 @@ instance ToJSON Document where
         <> optional "context" (doc ^. #context)
         <> optional "cache_control" (doc ^. #cacheControl)
 
-data Tool = CustomTool !ClientTool | WebSearchTool !WebSearch | VersionedTool !Object
+data Tool
+  = CustomTool !ClientTool
+  | ConfiguredTool !ClientTool !ToolLoading
+  | WebSearchTool !WebSearch
+  | ToolSearchTool !ToolSearch !(Maybe CacheControl)
+  | CodeExecutionTool !CodeExecutionVersion !(Maybe CacheControl)
+  | VersionedTool !Object
   deriving stock (Eq, Show)
 
 data ClientTool = ClientTool
@@ -158,6 +233,49 @@ data ClientTool = ClientTool
     cacheControl :: !(Maybe CacheControl)
   }
   deriving stock (Eq, Show, Generic)
+
+data ToolLoading = ToolLoading
+  { deferLoading :: !(Maybe Bool),
+    allowedCallers :: !(Maybe [AllowedCaller])
+  }
+  deriving stock (Eq, Show, Generic)
+
+data AllowedCaller = AllowDirect | AllowCodeExecution !CodeExecutionVersion | AllowVersionedCaller !Text
+  deriving stock (Eq, Show)
+
+data ToolCaller = DirectCaller | CodeExecutionCaller !CodeExecutionVersion !Text | VersionedCaller !Text !Object
+  deriving stock (Eq, Show)
+
+data ToolSearch = RegexSearch20251119 | BM25Search20251119
+  deriving stock (Eq, Show)
+
+data CodeExecutionVersion = CodeExecution20250825 | CodeExecution20260120
+  deriving stock (Eq, Show)
+
+codeExecutionTag :: CodeExecutionVersion -> Text
+codeExecutionTag CodeExecution20250825 = "code_execution_20250825"
+codeExecutionTag CodeExecution20260120 = "code_execution_20260120"
+
+instance ToJSON AllowedCaller where
+  toJSON AllowDirect = "direct"
+  toJSON (AllowCodeExecution version_) = toJSON (codeExecutionTag version_)
+  toJSON (AllowVersionedCaller name_) = toJSON name_
+
+instance ToJSON ToolCaller where
+  toJSON DirectCaller = tagged "direct" []
+  toJSON (CodeExecutionCaller version_ ident) = tagged (codeExecutionTag version_) ["tool_id" .= ident]
+  toJSON (VersionedCaller _ fields) = Object fields
+
+data ToolChangeReference
+  = ToolReference !Text
+  | MCPToolReference !Text !Text
+  | MCPToolsetReference !Text
+  deriving stock (Eq, Show)
+
+instance ToJSON ToolChangeReference where
+  toJSON (ToolReference name_) = tagged "tool_reference" ["name" .= name_]
+  toJSON (MCPToolReference server name_) = tagged "mcp_tool_reference" ["server_name" .= server, "name" .= name_]
+  toJSON (MCPToolsetReference server) = tagged "mcp_toolset_reference" ["server_name" .= server]
 
 data WebSearch = WebSearch
   { version :: !WebSearchVersion,
@@ -170,12 +288,9 @@ data WebSearchVersion = WebSearch20250305 | WebSearch20260209 | WebSearch2026031
   deriving stock (Eq, Show)
 
 instance ToJSON Tool where
-  toJSON (CustomTool tool) =
-    object $
-      ["name" .= (tool ^. #name), "input_schema" .= (tool ^. #inputSchema)]
-        <> optional "description" (tool ^. #description)
-        <> optional "strict" (tool ^. #strict)
-        <> optional "cache_control" (tool ^. #cacheControl)
+  toJSON (CustomTool tool) = object (clientToolFields tool)
+  toJSON (ConfiguredTool tool (ToolLoading deferred callers)) =
+    object (clientToolFields tool <> optional "defer_loading" deferred <> optional "allowed_callers" callers)
   toJSON (WebSearchTool tool) =
     tagged versionTag $
       ["name" .= ("web_search" :: Text)]
@@ -186,7 +301,22 @@ instance ToJSON Tool where
         WebSearch20250305 -> "web_search_20250305"
         WebSearch20260209 -> "web_search_20260209"
         WebSearch20260318 -> "web_search_20260318"
+  toJSON (ToolSearchTool search cache) =
+    tagged versionTag (["name" .= name_] <> optional "cache_control" cache)
+    where
+      (versionTag, name_) = case search of
+        RegexSearch20251119 -> ("tool_search_tool_regex_20251119", "tool_search_tool_regex" :: Text)
+        BM25Search20251119 -> ("tool_search_tool_bm25_20251119", "tool_search_tool_bm25")
+  toJSON (CodeExecutionTool version_ cache) =
+    tagged (codeExecutionTag version_) (["name" .= ("code_execution" :: Text)] <> optional "cache_control" cache)
   toJSON (VersionedTool tool) = toJSON tool
+
+clientToolFields :: ClientTool -> [Pair]
+clientToolFields tool =
+  ["name" .= (tool ^. #name), "input_schema" .= (tool ^. #inputSchema)]
+    <> optional "description" (tool ^. #description)
+    <> optional "strict" (tool ^. #strict)
+    <> optional "cache_control" (tool ^. #cacheControl)
 
 data ToolChoice = AutoTool !Bool | AnyTool !Bool | NamedTool !Text !Bool | NoTool
   deriving stock (Eq, Show)
@@ -198,7 +328,7 @@ instance ToJSON ToolChoice where
     tagged "tool" (("name" .= name_) : ["disable_parallel_tool_use" .= noParallel | noParallel])
   toJSON NoTool = tagged "none" []
 
-data ToolResultContent = ToolResultText !Text | ToolResultBlocks ![Object]
+data ToolResultContent = ToolResultText !Text | ToolResultBlocks ![Object] | EmptyToolResult
   deriving stock (Eq, Show)
 
 data ToolResult = ToolResult
@@ -212,11 +342,13 @@ data ToolResult = ToolResult
 instance ToJSON ToolResultContent where
   toJSON (ToolResultText text_) = toJSON text_
   toJSON (ToolResultBlocks blocks) = toJSON blocks
+  toJSON EmptyToolResult = Null
 
 instance ToJSON ToolResult where
   toJSON result =
     tagged "tool_result" $
-      ["tool_use_id" .= (result ^. #toolUseId), "content" .= (result ^. #content)]
+      ["tool_use_id" .= (result ^. #toolUseId)]
+        <> ["content" .= payload | let payload = result ^. #content, payload /= EmptyToolResult]
         <> optional "is_error" (result ^. #isError)
         <> optional "cache_control" (result ^. #cacheControl)
 
@@ -332,3 +464,87 @@ tagged tag fields = object (("type" .= tag) : fields)
 
 optional :: (ToJSON a) => Key -> Maybe a -> [Pair]
 optional key = maybe [] (\item -> [key .= item])
+
+instance FromJSON Speed where
+  parseJSON = withText "speed" $ \case
+    "standard" -> pure Standard
+    "fast" -> pure Fast
+    _ -> fail "unknown speed"
+
+instance FromJSON Effort where
+  parseJSON = withText "effort" $ \case
+    "low" -> pure Low
+    "medium" -> pure Medium
+    "high" -> pure High
+    "xhigh" -> pure ExtraHigh
+    "max" -> pure Maximum
+    other -> pure (VersionedEffort other)
+
+instance FromJSON OutputConfig where
+  parseJSON = withObject "output config" $ \o -> do
+    format <- o .:? "format"
+    schema_ <- traverse (withObject "output format" (.: "schema")) format
+    OutputConfig <$> o .:? "effort" <*> pure schema_
+
+instance FromJSON Thinking where
+  parseJSON = withObject "thinking" $ \o ->
+    (o .: "type" :: Parser Text) >>= \case
+      "adaptive" -> Adaptive <$> o .:? "display"
+      "enabled" -> ManualBudget <$> o .: "budget_tokens" <*> o .:? "display"
+      "disabled" -> pure ThinkingDisabled
+      "between_tools" -> pure BetweenTools
+      _ -> fail "unknown thinking mode"
+
+instance FromJSON ThinkingDisplay where
+  parseJSON = withText "thinking display" $ \case
+    "summarized" -> pure Summarized
+    "omitted" -> pure Omitted
+    "updates" -> pure Updates
+    _ -> fail "unknown thinking display"
+
+instance FromJSON CacheControl where
+  parseJSON = withObject "cache control" $ \o ->
+    (o .: "type" :: Parser Text) >>= \case
+      "ephemeral" -> Ephemeral <$> o .:? "ttl"
+      _ -> fail "unknown cache control"
+
+instance FromJSON CacheTTL where
+  parseJSON = withText "cache TTL" $ \case
+    "5m" -> pure FiveMinutes
+    "1h" -> pure OneHour
+    _ -> fail "unknown cache TTL"
+
+instance FromJSON SystemPrompt where
+  parseJSON raw = (SystemText <$> parseJSON raw) <|> (SystemBlocks <$> parseJSON raw)
+
+instance FromJSON SystemBlock where
+  parseJSON = withObject "system block" $ \o -> SystemBlock <$> o .: "text" <*> o .:? "cache_control"
+
+instance FromJSON Tool where
+  parseJSON = withObject "tool definition" (pure . VersionedTool)
+
+instance FromJSON ToolChoice where
+  parseJSON = withObject "tool choice" $ \o -> do
+    noParallel <- o .:? "disable_parallel_tool_use" .!= False
+    (o .: "type" :: Parser Text) >>= \case
+      "auto" -> pure (AutoTool noParallel)
+      "any" -> pure (AnyTool noParallel)
+      "tool" -> NamedTool <$> o .: "name" <*> pure noParallel
+      "none" -> pure NoTool
+      _ -> fail "unknown tool choice"
+
+instance FromJSON Compaction where
+  parseJSON = withObject "context management edit" $ \o -> do
+    trigger <- o .:? "trigger"
+    threshold <- traverse (withObject "compaction trigger" (.: "value")) trigger
+    (o .: "type" :: Parser Text) >>= \case
+      "compact_20260112" -> Compaction <$> o .:? "instructions" <*> o .:? "pause_after_compaction" <*> pure threshold
+      _ -> fail "unknown context management edit"
+
+instance FromJSON Fallbacks where
+  parseJSON (String "default") = pure DefaultFallbacks
+  parseJSON raw = FallbackModels <$> parseJSON raw
+
+instance FromJSON FallbackModel where
+  parseJSON = withObject "fallback model" $ \o ->
+    FallbackModel <$> o .: "model" <*> o .:? "max_tokens" <*> o .:? "output_config" <*> o .:? "speed" <*> o .:? "thinking"

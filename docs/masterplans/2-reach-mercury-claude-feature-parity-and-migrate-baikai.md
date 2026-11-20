@@ -21,6 +21,11 @@ provenance:
       at: 2026-11-20T22:03:12Z
       mode: "update"
       note: "Assign two-turn continuation to EP-7 and require a clean adopted Baikai revision."
+    - model: "gpt-6.2-sol"
+      harness: "codex-cli"
+      at: 2026-11-20T22:29:30Z
+      mode: "implement"
+      note: "Coordinate request and response parity and Baikai adoption."
 ---
 
 # Reach Mercury Claude feature parity and migrate Baikai
@@ -43,7 +48,7 @@ Compare against the released Hackage sources for `Claude.V1`, `Claude.V1.Error`,
 
 | # | Title | Path | Hard deps | Soft deps | Status |
 |---|---|---|---|---|---|
-| EP-6 | Complete Claude Messages request and tool feature coverage | [6-complete-claude-messages-request-and-tool-feature-coverage.md](../plans/6-complete-claude-messages-request-and-tool-feature-coverage.md) | None | None | Not Started |
+| EP-6 | Complete Claude Messages request and tool feature coverage | [6-complete-claude-messages-request-and-tool-feature-coverage.md](../plans/6-complete-claude-messages-request-and-tool-feature-coverage.md) | None | None | In Progress |
 | EP-7 | Preserve advanced Claude response and streaming evidence | [7-preserve-advanced-claude-response-and-streaming-evidence.md](../plans/7-preserve-advanced-claude-response-and-streaming-evidence.md) | Two-turn fixture only: EP-6 continuation inputs milestone | None | Not Started |
 | EP-8 | Remove the Mercury Claude dependency from Baikai | [8-remove-the-mercury-claude-dependency-from-baikai.md](../plans/8-remove-the-mercury-claude-dependency-from-baikai.md) | EP-6, EP-7 | None | Not Started |
 

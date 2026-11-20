@@ -15,3 +15,20 @@ Refresh fixtures by comparing the dated endpoint documentation and migration gui
 **Streaming migration.** `streamMessageValue` accepts a provider-shaped Messages object, validates its model, history and output limit, and owns the stream flag. With `apiVersion = Just "2026-10-21"` it reports removed sampling settings before dispatch. Compatibility callers with a supported old host or model may explicitly configure `Just "2023-06-01"` until they can migrate the setting. The direct client uses `2026-10-21` by default.
 
 **Batch results.** Read JSON Lines with the configured client origin and typed batch ID. The request uses the binary result media type. [Message Batch results](https://platform.claude.com/docs/en/api/messages/batches/results) and [Anthropic Python client](https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/resources/messages/batches.py)
+
+## Request controls and tools
+
+| Capability | Contract and fixture |
+|---|---|
+| Empty history and sampling | On `2023-06-01`, construct `EmptyConversation` or set `temperature`, `topP` and `topK` with `withRequestControls` on eligible models. `requestControlsRoundtrip` captures empty SSE and legacy sampling, and verifies independent pre-dispatch rejection on `2026-10-21`. Use `conversationHistory` and `withConversationHistory` with either conversation constructor. |
+| Metadata and inference geography | `advancedRequestRoundtrip` captures `metadata` and `inference_geo` on create. |
+| Compaction | `Compaction` builds an edit for `compact_20260112`, including instructions, token trigger and pause behavior. Configure the `compact-2026-01-12` beta in request options. `advancedRequestRoundtrip` captures the nested edit. |
+| Container reuse | `containerId` places the returned ID on a generation request. `advancedRequestRoundtrip` captures the top-level ID, caller tag and tool ID. |
+| Fallback configuration | `DefaultFallbacks` or `FallbackModels` selects server-side fallback with `server-side-fallback-2026-07-01` on eligible models. `advancedRequestRoundtrip` captures the ordered model settings. |
+| Mid-conversation system turns | Use `Message System` with text, `ToolAddition` or `ToolRemoval` for eligible models. Tool changes use the `inline-tools-2026-09-15` or platform-specific beta. The fixture captures system role and both reference tags. |
+| Deferred tools and tool search | Set `ConfiguredTool` with `ToolLoading` and include a `ToolSearchTool`. The fixture captures both pinned BM25 and regex variants and `defer_loading`. |
+| Programmatic tool calling | Supply `CodeExecutionTool` and configure matching `AllowCodeExecution` for compatible client tools. Use the model-supported version of the tool and preserve its caller and container on continuation. |
+| Token counting and batches | The count projection drops generation controls and keeps model, messages, system, cache, schema, thinking, speed and tools. Batches embed the synchronous body and use its validation. The fixtures capture both projections and reject removed sampling in batch params on the current version. |
+| JSON migration | `MessageRequest` decodes supported serialized requests and preserves tagged input and tool objects. Use `VersionedBlock` and `VersionedTool` for provider extensions. |
+
+See [mid-conversation system messages](https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages), [tool search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool), [programmatic tool calling](https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling), and [fallback](https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback).

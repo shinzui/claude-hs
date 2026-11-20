@@ -33,6 +33,7 @@ library
 
   other-modules:
     Claude.Internal.Http
+    Claude.Internal.Request
     Claude.Internal.Sse
 
   build-depends:
@@ -74,6 +75,7 @@ test-suite claude-hs-test
     aeson,
     bytestring,
     claude-hs,
+    containers,
     generic-lens,
     http-types,
     lens,

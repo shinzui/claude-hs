@@ -13,19 +13,16 @@ module Claude.Streaming
 where
 
 import Claude.Client
-import Claude.Internal.Http (clientApiVersion, decodeResponse, redactApiError, runRequest)
+import Claude.Internal.Http (decodeResponse, redactApiError, runRequest)
+import Claude.Internal.Request (validateMessages)
 import Claude.Internal.Sse (foldEvents)
 import Claude.Messages
-import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except (throwE)
 import Data.Aeson (FromJSON (..), Object, Value (..), toJSON, withObject, (.:), (.:?))
-import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
-import Data.Aeson.Types (Parser, parseEither)
 import Data.ByteString.Lazy qualified as LBS
 import Data.Text (Text)
-import Data.Text qualified as Text
 import Data.Text.Encoding (encodeUtf8)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
@@ -148,10 +145,10 @@ streamMessageValue ::
   (ResponseMetadata -> StreamEvent -> IO StreamControl) ->
   IO (Either ClientError (Response StreamEnd))
 streamMessageValue client options body consume =
-  case parseEither (withObject "Messages request" validate) body of
-    Left detail -> pure (Left (InvalidRequest (Text.pack detail)))
+  case validateMessages client True body of
+    Left err -> pure (Left err)
     Right fields ->
-      runRequest client "POST" "/v1/messages" [] options "text/event-stream" (Just (Object fields)) $ \meta readBody -> do
+      runRequest client "POST" "/v1/messages" [] options "text/event-stream" (Just (Object (KeyMap.insert "stream" (Bool True) fields))) $ \meta readBody -> do
         final <- foldEvents readBody $ \eventName payload -> do
           FrameEvent tag decoded raw <- either throwE pure (decodeResponse meta (LBS.fromStrict payload))
           if maybe False (\name -> name /= "" && name /= encodeUtf8 tag) eventName
@@ -165,18 +162,3 @@ streamMessageValue client options body consume =
                   (_, Stop) -> Just Stopped
                   _ -> Nothing
         maybe (throwE (DecodeError meta "Stream ended before message_stop")) pure final
-  where
-    validate fields = do
-      modelId <- fields .: "model"
-      history <- fields .: "messages" :: Parser [Value]
-      limit <- fields .: "max_tokens"
-      when (Text.null modelId || (limit :: Natural) == 0) $
-        fail "Messages require a model ID and positive max_tokens"
-      when (currentVersion && null history) $
-        fail "Messages require a nonempty conversation"
-      case removedSampling fields of
-        [] -> pure (KeyMap.insert "stream" (Bool True) fields)
-        removed -> fail ("2026-10-21 removed sampling fields: " <> show (map Key.toText removed))
-    currentVersion = clientApiVersion client == Just "2026-10-21"
-    removedSampling fields =
-      [key | currentVersion, key <- ["temperature", "top_p", "top_k"], KeyMap.member key fields]

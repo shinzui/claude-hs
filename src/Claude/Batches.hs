@@ -25,6 +25,7 @@ where
 
 import Claude.Client
 import Claude.Internal.Http (decodeResponse, jsonRequest, redactApiError, runRequest)
+import Claude.Internal.Request (validateMessages)
 import Claude.Messages (MessageRequest, MessageResponse)
 import Control.Lens ((^.))
 import Control.Monad.IO.Class (liftIO)
@@ -198,7 +199,9 @@ batchRoute ident = batchRoot <> "/" <> encodeUtf8 (batchIdText ident)
 createBatch :: Client -> RequestOptions -> NonEmpty BatchItem -> IO (Either ClientError (Response Batch))
 createBatch client options items
   | Set.size ids /= NonEmpty.length items = pure (Left (InvalidRequest "Batch custom IDs must be unique"))
-  | otherwise = jsonRequest client "POST" batchRoot [] options (Just (object ["requests" .= items]))
+  | otherwise = case traverse (validateMessages client True . toJSON . (^. #params)) items of
+      Left err -> pure (Left err)
+      Right _ -> jsonRequest client "POST" batchRoot [] options (Just (object ["requests" .= items]))
   where
     ids = Set.fromList (map (^. #customId) (NonEmpty.toList items))
 

@@ -119,7 +119,7 @@ consecutiveToolRounds = do
   request <- sampleRequest enrichedConversation
   let first = [thinkingBlock "" "signature-1", toolUseBlock "toolu_1"]
       second = [thinkingBlock "visible" "signature-2", redactedBlock, toolUseBlock "toolu_2"]
-      historyPrefix = enrichedConversation ^. #messages
+      historyPrefix = conversationHistory enrichedConversation
       toolReply toolId = Message User (InputToolResult (ToolResult toolId (ToolResultText "green") Nothing Nothing) :| [])
       resultJson toolId =
         object
@@ -128,7 +128,7 @@ consecutiveToolRounds = do
           ]
       historyWith blocks toolId =
         [object ["role" .= ("assistant" :: Text), "content" .= blocks], resultJson (toolId :: Text)]
-      expectedHistory = map toJSON (toListNE historyPrefix)
+      expectedHistory = map toJSON (historyPrefix)
       app req send = do
         number <- atomicModifyIORef' call (\n -> (n + 1, n))
         body <- requestJson req
@@ -157,16 +157,16 @@ consecutiveToolRounds = do
             assertEqual "two consecutive continuations" (Just (toJSON (expectedHistory <> historyWith first "toolu_1" <> historyWith second "toolu_2"))) (field "messages" body)
             send (json status200 [] (messageFixture [textBlock "green" []]))
       go client history = do
-        let updated = request {conversation = enrichedConversation {messages = history}}
+        let updated = request {conversation = withConversationHistory history enrichedConversation}
         Response _ result <- createMessage client enrichedOptions updated >>= expectRight
         pure result
   withClient app $ \client -> do
     firstResponse <- go client historyPrefix
     firstAssistant <- maybe (fail "missing first continuation") pure (assistantContinuation firstResponse)
-    let secondHistory = historyPrefix <> (firstAssistant :| [toolReply "toolu_1"])
+    let secondHistory = historyPrefix <> [firstAssistant, toolReply "toolu_1"]
     secondResponse <- go client secondHistory
     secondAssistant <- maybe (fail "missing second continuation") pure (assistantContinuation secondResponse)
-    lastResponse <- go client (secondHistory <> (secondAssistant :| [toolReply "toolu_2"]))
+    lastResponse <- go client (secondHistory <> [secondAssistant, toolReply "toolu_2"])
     assertEqual "two-tool continuation result" "green" (responseText lastResponse)
   readIORef call >>= assertEqual "tool-round dispatch count" 3
   assertEqual
@@ -174,8 +174,6 @@ consecutiveToolRounds = do
     (object ["type" .= ("enabled" :: Text), "budget_tokens" .= (1024 :: Int)])
     (toJSON (ManualBudget 1024 Nothing))
   assertEqual "thinking disabled" (object ["type" .= ("disabled" :: Text)]) (toJSON ThinkingDisabled)
-  where
-    toListNE (x :| xs) = x : xs
 
 webCitation :: Value
 webCitation =
@@ -224,9 +222,8 @@ citationsAndSearch = do
       blocks = [searchCall, searchResult, searchError, textBlock "document" [citation], textBlock "web" [webCitation], future]
       document = PlainTextDocument "A forest" (Just "Report") Nothing True Nothing
       convo =
-        baseConversation
-          { messages = Message User (InputDocument document :| []) :| [],
-            features = defaultMessageFeatures {tools = [WebSearchTool (WebSearch WebSearch20250305 (Just 2) Nothing)]}
+        (withConversationHistory [Message User (InputDocument document :| [])] baseConversation)
+          { features = defaultMessageFeatures {tools = [WebSearchTool (WebSearch WebSearch20250305 (Just 2) Nothing)]}
           }
       reply =
         putField
@@ -246,7 +243,7 @@ citationsAndSearch = do
           Just "replay" -> do
             let expected = object ["role" .= ("assistant" :: Text), "content" .= blocks]
             assert "assistant evidence in replay" (maybe False (contains expected) (field "messages" body))
-          _ -> assertEqual "document and enabled citations" (Just (toJSON (convo ^. #messages))) (field "messages" body)
+          _ -> assertEqual "document and enabled citations" (Just (toJSON (conversationHistory convo))) (field "messages" body)
         send (json status200 [] reply)
   request <- sampleRequest convo
   withClient app $ \client -> do
@@ -263,7 +260,7 @@ citationsAndSearch = do
         ] -> pure ()
       _ -> fail "Expected typed document, web and future response blocks"
     resumed <- maybe (fail "missing search continuation") pure (assistantContinuation result)
-    let replay = request {conversation = convo {messages = (convo ^. #messages) <> (resumed :| [Message User (InputText "Summarize" :| [])])}}
+    let replay = request {conversation = withConversationHistory (conversationHistory convo <> [resumed, Message User (InputText "Summarize" :| [])]) convo}
     _ <- createMessage client (defaultRequestOptions {extraHeaders = [("x-case", "replay")]}) replay >>= expectRight
     pure ()
   where

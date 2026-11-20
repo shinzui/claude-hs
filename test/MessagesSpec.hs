@@ -1,11 +1,17 @@
 module MessagesSpec (run, baseConversation, messageFixture, sampleRequest) where
 
+import Claude.Batches (BatchItem (..), createBatch, mkCustomId)
 import Claude.Client
 import Claude.Messages
-import Data.Aeson (Value, object, (.=))
+import Claude.Streaming qualified as Claude
+import Control.Monad (void)
+import Data.Aeson (Value, eitherDecode, encode, object, toJSON, (.=))
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Aeson.Types (Pair)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf)
 import Data.List.NonEmpty (NonEmpty (..))
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Network.HTTP.Types (status200, status302, status429, status502)
@@ -36,6 +42,8 @@ run = do
   textRoundtrip
   tokensRoundtrip
   failureCases
+  requestControlsRoundtrip
+  advancedRequestRoundtrip
   putStrLn "Messages: text, session headers, token count and failure fixtures passed"
 
 textRoundtrip :: IO ()
@@ -111,7 +119,6 @@ tokensRoundtrip = do
   where
     text body = object ["type" .= ("text" :: Text), "text" .= (body :: Text)]
     image source = object ["type" .= ("image" :: Text), "source" .= object source]
-    turn role blocks = object ["role" .= (role :: Text), "content" .= (blocks :: [Value])]
 
 failureCases :: IO ()
 failureCases = do
@@ -157,3 +164,104 @@ failureCases = do
       Left err -> fail ("Expected disconnected request, got " <> show err)
       Right _ -> fail "Disconnected request succeeded"
   readIORef calls >>= assertEqual "one dispatch per operation" 5
+
+requestControlsRoundtrip :: IO ()
+requestControlsRoundtrip = do
+  empty <- sampleRequest (EmptyConversation "claude-sonnet-4-6" Nothing defaultMessageFeatures)
+  filled <- sampleRequest (Conversation "claude-sonnet-4-6" (Message User (InputText "Hello" :| []) :| []) Nothing defaultMessageFeatures)
+  let tuning = defaultRequestControls {temperature = Just 0.2, topP = Just 0.7, topK = Just 15}
+      emptyJSON = object ["model" .= ("claude-sonnet-4-6" :: Text), "max_tokens" .= (256 :: Int), "messages" .= ([] :: [Value]), "stream" .= True]
+      samplingJSON = object ["model" .= ("claude-sonnet-4-6" :: Text), "max_tokens" .= (256 :: Int), "messages" .= [userHello], "temperature" .= (0.2 :: Double), "top_p" .= (0.7 :: Double), "top_k" .= (15 :: Int)]
+      legacy = (defaultClientConfig "loopback-secret") {apiVersion = Just "2023-06-01"}
+      opts = defaultRequestOptions
+  withClientConfig legacy (capture emptyJSON sseStop) $ \client ->
+    void $ Claude.streamMessage client opts empty (\_ _ -> pure Claude.Continue) >>= expectRight
+  withClientConfig legacy (capture samplingJSON (json status200 [] (messageFixture []))) $ \client ->
+    void $ createMessage client opts (withRequestControls tuning filled) >>= expectRight
+  calls <- newIORef (0 :: Int)
+  withClient (\_ send -> modifyIORef' calls (+ 1) >> send sseStop) $ \client -> do
+    invalid "nonempty" =<< Claude.streamMessage client opts empty (\_ _ -> pure Claude.Continue)
+    invalid "sampling" =<< Claude.streamMessage client opts (withRequestControls tuning filled) (\_ _ -> pure Claude.Continue)
+    invalid "sampling" =<< createMessage client opts (withRequestControls tuning filled)
+    invalid "nonempty" =<< countTokens client opts (CountRequest (conversation empty))
+    ident <- maybe (fail "invalid test ID") pure (mkCustomId "example")
+    invalid "sampling" =<< createBatch client opts (BatchItem ident (withRequestControls tuning filled) :| [])
+  readIORef calls >>= assertEqual "invalid requests never dispatched" 0
+  where
+    invalid fragment = \case
+      Left (InvalidRequest detail) -> assert "validation detail" (fragment `Text.isInfixOf` detail)
+      _ -> fail "expected InvalidRequest"
+
+advancedRequestRoundtrip :: IO ()
+advancedRequestRoundtrip = do
+  let schema = KeyMap.fromList ["type" .= ("object" :: Text)]
+      tool = ClientTool "lookup" Nothing schema Nothing Nothing
+      toolFeatures =
+        defaultMessageFeatures
+          { tools = [CodeExecutionTool CodeExecution20250825 Nothing, ToolSearchTool BM25Search20251119 Nothing, ToolSearchTool RegexSearch20251119 Nothing, ConfiguredTool tool (ToolLoading (Just True) (Just [AllowDirect, AllowCodeExecution CodeExecution20250825])), CustomTool (ClientTool "old_lookup" Nothing schema Nothing Nothing)]
+          }
+      toolCall = InputToolUse "toolu_1" "lookup" (object []) (Just (CodeExecutionCaller CodeExecution20250825 "srvtoolu_1"))
+      systemChange = Message System (ToolAddition (ToolReference "lookup") Nothing :| [ToolRemoval (ToolReference "old_lookup") Nothing])
+      convo = Conversation "claude-opus-4-8" (Message User (InputText "Hello" :| []) :| [systemChange, Message Assistant (toolCall :| []), Message User (InputToolResult (ToolResult "toolu_1" (ToolResultText "result") Nothing Nothing) :| [])]) Nothing toolFeatures
+      controls =
+        defaultRequestControls
+          { containerId = Just "container_1",
+            metadata = Just (Map.singleton "user_id" "user_1"),
+            contextManagement = Just [Compaction (Just "Keep names") (Just True) (Just 100000)],
+            inferenceGeo = Just "us",
+            fallbacks = Just (FallbackModels [FallbackModel "claude-sonnet-4-6" (Just 128) Nothing Nothing Nothing])
+          }
+      opts = defaultRequestOptions {betaFeatures = ["inline-tools-2026-09-15", "compact-2026-01-12", "server-side-fallback-2026-07-01"]}
+      history =
+        [ userHello,
+          turn "system" [tagged "tool_addition" ["tool" .= tagged "tool_reference" ["name" .= ("lookup" :: Text)]], tagged "tool_removal" ["tool" .= tagged "tool_reference" ["name" .= ("old_lookup" :: Text)]]],
+          turn "assistant" [tagged "tool_use" ["id" .= ("toolu_1" :: Text), "name" .= ("lookup" :: Text), "input" .= object [], "caller" .= tagged "code_execution_20250825" ["tool_id" .= ("srvtoolu_1" :: Text)]]],
+          turn "user" [tagged "tool_result" ["tool_use_id" .= ("toolu_1" :: Text), "content" .= ("result" :: Text)]]
+        ]
+      toolsJSON =
+        [ tagged "code_execution_20250825" ["name" .= ("code_execution" :: Text)],
+          tagged "tool_search_tool_bm25_20251119" ["name" .= ("tool_search_tool_bm25" :: Text)],
+          tagged "tool_search_tool_regex_20251119" ["name" .= ("tool_search_tool_regex" :: Text)],
+          object ["name" .= ("lookup" :: Text), "input_schema" .= object ["type" .= ("object" :: Text)], "defer_loading" .= True, "allowed_callers" .= (["direct", "code_execution_20250825"] :: [Text])],
+          object ["name" .= ("old_lookup" :: Text), "input_schema" .= object ["type" .= ("object" :: Text)]]
+        ]
+      promptFields = ["model" .= ("claude-opus-4-8" :: Text), "messages" .= history, "tools" .= toolsJSON]
+      expected =
+        object $
+          promptFields
+            <> [ "max_tokens" .= (256 :: Int),
+                 "stop_sequences" .= (["done"] :: [Text]),
+                 "container" .= ("container_1" :: Text),
+                 "metadata" .= object ["user_id" .= ("user_1" :: Text)],
+                 "context_management" .= object ["edits" .= [tagged "compact_20260112" ["instructions" .= ("Keep names" :: Text), "pause_after_compaction" .= True, "trigger" .= tagged "input_tokens" ["value" .= (100000 :: Int)]]]],
+                 "inference_geo" .= ("us" :: Text),
+                 "fallbacks" .= [object ["model" .= ("claude-sonnet-4-6" :: Text), "max_tokens" .= (128 :: Int)]]
+               ]
+      app req send = do
+        assertEqual "advanced beta header" (Just "inline-tools-2026-09-15,compact-2026-01-12,server-side-fallback-2026-07-01") (lookup "anthropic-beta" (Wai.requestHeaders req))
+        case Wai.rawPathInfo req of
+          "/v1/messages" -> capture expected (json status200 [] (messageFixture [])) req send
+          "/v1/messages/count_tokens" -> capture (object promptFields) (json status200 [] (object ["input_tokens" .= (10 :: Int)])) req send
+          _ -> fail "unexpected request route"
+  base <- sampleRequest convo
+  let request = withRequestControls controls base {stopSequences = ["done"]}
+  withClient app $ \client -> do
+    _ <- createMessage client opts request >>= expectRight
+    void $ countTokens client opts (CountRequest convo) >>= expectRight
+  decoded <- expectRight (eitherDecode (encode expected))
+  assertEqual "advanced request JSON decode and re-encode" expected (toJSON (decoded :: MessageRequest))
+
+capture :: Value -> Wai.Response -> Wai.Application
+capture expected reply req send = requestJson req >>= assertEqual "captured request" expected >> send reply
+
+sseStop :: Wai.Response
+sseStop = Wai.responseLBS status200 [("content-type", "text/event-stream")] "data: {\"type\":\"message_stop\"}\n\n"
+
+turn :: Text -> [Value] -> Value
+turn sender blocks = object ["role" .= sender, "content" .= blocks]
+
+tagged :: Text -> [Pair] -> Value
+tagged tag fields = object (("type" .= tag) : fields)
+
+userHello :: Value
+userHello = turn "user" [tagged "text" ["text" .= ("Hello" :: Text)]]

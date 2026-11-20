@@ -22,6 +22,11 @@ provenance:
       at: 2026-11-20T22:03:12Z
       mode: "update"
       note: "Exercise legacy empty history through the typed mapper and deliver continuation inputs early."
+    - model: "gpt-6.2-sol"
+      harness: "codex-cli"
+      at: 2026-11-20T22:29:30Z
+      mode: "implement"
+      note: "Implement request controls and version-aware history validation."
 ---
 
 # Complete Claude Messages request and tool feature coverage
@@ -40,6 +45,8 @@ A caller can express every supported request that Mercury 1.5.0 could send, incl
 - [ ] The Baikai request mapping slice compiles and sends equivalent semantic JSON for a legacy request and a current schema request, including an empty legacy history and independent pre-dispatch failures for empty current history and removed sampling fields.
 - [ ] Continuation inputs are ready for the response plan when a public request fixture sends a container ID and admitted tool and fallback history through the typed encoder under the selected version.
 - [ ] The request and tool inventory is covered by endpoint and version fixtures, including a compound request using tool search and programmatic tool calling.
+
+The request codecs and dispatch checks pass in the locked shell. Public loopback fixtures cover empty legacy history, independent current-version rejections, old sampling, and the advanced body and token-count projection. The disposable Baikai mapper comparison is still required.
 
 ## Surprises & Discoveries
 

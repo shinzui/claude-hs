@@ -17,7 +17,6 @@ import Data.ByteString.Lazy qualified as LBS
 import Data.Generics.Labels ()
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List.NonEmpty (NonEmpty (..))
-import Data.List.NonEmpty qualified as NonEmpty
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
 import FeaturesSpec (thinkingBlock, webCitation)
@@ -229,7 +228,7 @@ streamToolContinuation = do
           else do
             let expectedMessages =
                   toJSON
-                    [ toJSON (NonEmpty.head (baseConversation ^. #messages)),
+                    [ toJSON (Message User (InputText "Hello" :| [])),
                       object ["role" .= ("assistant" :: Text), "content" .= [signed, tool finalInput]],
                       object ["role" .= ("user" :: Text), "content" .= [event "tool_result" ["tool_use_id" .= toolId, "content" .= ("done" :: Text)]]]
                     ]
@@ -268,7 +267,7 @@ streamToolContinuation = do
           let updated = starting & #content .~ [thinking, called]
           reply <- maybe (fail "missing stream continuation") pure (assistantContinuation updated)
           let toolResult = Message User (InputToolResult (ToolResult toolId (ToolResultText "done") Nothing Nothing) :| [])
-              continued = request {conversation = baseConversation {messages = (baseConversation ^. #messages) <> (reply :| [toolResult])}}
+              continued = request {conversation = withConversationHistory (conversationHistory baseConversation <> [reply, toolResult]) baseConversation}
           void (createMessage client defaultRequestOptions continued >>= expectRight)
       _ -> fail "Unexpected continuation transcript"
   where
