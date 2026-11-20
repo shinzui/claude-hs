@@ -16,6 +16,11 @@ provenance:
       at: 2026-11-20T20:25:29Z
       mode: "update"
       note: "Use the Seihou-generated Nix development shell for client builds and tests."
+    - model: "gpt-6.2-sol"
+      harness: "codex-cli"
+      at: 2026-11-20T20:29:05Z
+      mode: "implement"
+      note: "Implement the client and verify plan acceptance against the locked toolchain."
 ---
 
 # Send messages and count input tokens
@@ -32,7 +37,7 @@ A Haskell caller can send a conversation to Claude and estimate its input tokens
 
 ## Progress
 
-- [ ] The Seihou-managed development shell supplies GHC 9.12.4 and Cabal from a fresh checkout.
+- [x] 2026-11-20. Seihou generated the locked flake. The shell reported GHC 9.12.4 and Cabal 3.16.1.0.
 - [ ] A typed text conversation completes over HTTP and preserves response metadata and failures.
 - [ ] Token counting and multi-turn image/text fixtures pass through the same public client.
 

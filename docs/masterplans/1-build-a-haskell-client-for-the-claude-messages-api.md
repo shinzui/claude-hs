@@ -15,6 +15,11 @@ provenance:
       at: 2026-11-20T20:25:29Z
       mode: "update"
       note: "Use the Seihou-generated Nix development shell for client builds and tests."
+    - model: "gpt-6.2-sol"
+      harness: "codex-cli"
+      at: 2026-11-20T20:29:05Z
+      mode: "implement"
+      note: "Implement the client and verify plan acceptance against the locked toolchain."
 ---
 
 # Build a Haskell client for the Claude Messages API
@@ -40,7 +45,7 @@ EP-1 bootstraps the tooling under the [tooling ADR](../adr/0001-bootstrap-haskel
 
 | # | Title | Path | Hard deps | Soft deps | Status |
 |---|---|---|---|---|---|
-| EP-1 | Send messages and count input tokens | [1-send-messages-and-count-input-tokens.md](../plans/1-send-messages-and-count-input-tokens.md) | None | None | Not Started |
+| EP-1 | Send messages and count input tokens | [1-send-messages-and-count-input-tokens.md](../plans/1-send-messages-and-count-input-tokens.md) | None | None | In Progress |
 | EP-2 | Stream message events as they arrive | [2-stream-message-events-as-they-arrive.md](../plans/2-stream-message-events-as-they-arrive.md) | EP-1, EP-4 | None | Not Started |
 | EP-3 | Submit message batches and consume their results | [3-submit-message-batches-and-consume-their-results.md](../plans/3-submit-message-batches-and-consume-their-results.md) | EP-1 | None | Not Started |
 | EP-4 | Support current Claude reasoning, tools, caching and citations | [4-support-current-claude-reasoning-tools-caching-and-citations.md](../plans/4-support-current-claude-reasoning-tools-caching-and-citations.md) | EP-1 | None | Not Started |
@@ -60,7 +65,7 @@ Use that same candidate adapter in the Shikumi and Shikigami checks. Drive a sch
 
 ## Progress
 
-Planning complete. EP-1 is ready. The consumer checks and the enriched batch fixture remain open.
+EP-1 is in progress with the Seihou bootstrap applied. The consumer checks and the enriched batch fixture remain open.
 
 ## Surprises & Discoveries
 
