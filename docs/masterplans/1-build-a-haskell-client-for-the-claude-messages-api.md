@@ -46,7 +46,7 @@ EP-1 bootstraps the tooling under the [tooling ADR](../adr/0001-bootstrap-haskel
 | # | Title | Path | Hard deps | Soft deps | Status |
 |---|---|---|---|---|---|
 | EP-1 | Send messages and count input tokens | [1-send-messages-and-count-input-tokens.md](../plans/1-send-messages-and-count-input-tokens.md) | None | None | Complete |
-| EP-2 | Stream message events as they arrive | [2-stream-message-events-as-they-arrive.md](../plans/2-stream-message-events-as-they-arrive.md) | EP-1, EP-4 | None | Not Started |
+| EP-2 | Stream message events as they arrive | [2-stream-message-events-as-they-arrive.md](../plans/2-stream-message-events-as-they-arrive.md) | EP-1, EP-4 | None | Complete |
 | EP-3 | Submit message batches and consume their results | [3-submit-message-batches-and-consume-their-results.md](../plans/3-submit-message-batches-and-consume-their-results.md) | EP-1 | None | Not Started |
 | EP-4 | Support current Claude reasoning, tools, caching and citations | [4-support-current-claude-reasoning-tools-caching-and-citations.md](../plans/4-support-current-claude-reasoning-tools-caching-and-citations.md) | EP-1 | None | Complete |
 | EP-5 | Verify the client through Baikai, Shikumi and Shikigami | [5-verify-the-client-through-baikai-shikumi-and-shikigami.md](../plans/5-verify-the-client-through-baikai-shikumi-and-shikigami.md) | EP-2, EP-4 | None | Not Started |
@@ -65,7 +65,7 @@ Use that same candidate adapter in the Shikumi and Shikigami checks. Drive a sch
 
 ## Progress
 
-EP-1 passed with the locked toolchain. Its first working call compiled a Baikai-style request and captured the expected beta and x-session-affinity headers. EP-4 passed its feature and continuation roundtrips. EP-2 is next. The downstream trial and enriched batch fixture remain open.
+EP-1 passed with the locked toolchain. Its first working call compiled a Baikai-style request and captured the expected beta and x-session-affinity headers. EP-4 passed its feature and continuation roundtrips. EP-2 passed its SSE delivery and cancellation fixtures. The downstream trial and enriched batch fixture remain open.
 
 ## Surprises & Discoveries
 

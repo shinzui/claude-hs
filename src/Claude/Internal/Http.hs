@@ -14,6 +14,8 @@ module Claude.Internal.Http
     runRequest,
     jsonRequest,
     decodeResponse,
+    redactApiError,
+    clientApiVersion,
   )
 where
 
@@ -39,17 +41,18 @@ data Client = Client !HTTP.Manager !HTTP.Request
 data ClientConfig = ClientConfig
   { apiKey :: !ByteString,
     endpoint :: !String,
-    timeoutMicros :: !Int
+    timeoutMicros :: !(Maybe Int),
+    apiVersion :: !(Maybe ByteString)
   }
   deriving stock (Generic)
 
 defaultClientConfig :: ByteString -> ClientConfig
-defaultClientConfig key = ClientConfig key "https://api.anthropic.com" 60000000
+defaultClientConfig key = ClientConfig key "https://api.anthropic.com" (Just 60000000) (Just "2026-10-21")
 
 newClient :: ClientConfig -> IO (Either ClientError Client)
 newClient config
   | BS.null (config ^. #apiKey) = pure (Left (InvalidRequest "An API key is required"))
-  | config ^. #timeoutMicros <= 0 = pure (Left (InvalidRequest "The response timeout must be positive"))
+  | maybe False (<= 0) (config ^. #timeoutMicros) = pure (Left (InvalidRequest "The response timeout must be positive"))
   | otherwise = do
       parsed <- try (HTTP.parseRequest (config ^. #endpoint))
       case parsed of
@@ -64,11 +67,10 @@ newClient config
                   { HTTP.redirectCount = 0,
                     HTTP.checkResponse = \_ _ -> pure (),
                     HTTP.cookieJar = Nothing,
-                    HTTP.responseTimeout = HTTP.responseTimeoutMicro (config ^. #timeoutMicros),
+                    HTTP.responseTimeout = maybe HTTP.responseTimeoutNone HTTP.responseTimeoutMicro (config ^. #timeoutMicros),
                     HTTP.requestHeaders =
-                      [ ("x-api-key", config ^. #apiKey),
-                        ("anthropic-version", "2026-10-21")
-                      ]
+                      [("x-api-key", config ^. #apiKey)]
+                        <> [("anthropic-version", version) | Just version <- [config ^. #apiVersion]]
                   }
 
 data RequestOptions = RequestOptions
@@ -83,7 +85,9 @@ defaultRequestOptions = RequestOptions [] []
 data ResponseMetadata = ResponseMetadata
   { requestId :: !(Maybe ByteString),
     retryAfter :: !(Maybe ByteString),
-    status :: !Int
+    status :: !Int,
+    gatewayRequestId :: !(Maybe ByteString),
+    cloudflareRay :: !(Maybe ByteString)
   }
   deriving stock (Eq, Generic)
 
@@ -134,23 +138,28 @@ runRequest ::
   Maybe Value ->
   (ResponseMetadata -> BodyReader -> ExceptT ClientError IO a) ->
   IO (Either ClientError (Response a))
-runRequest (Client manager base) method route query options accept body consume
+runRequest client@(Client manager base) method route query options accept body consume
   | any ((`elem` reservedHeaders) . fst) (options ^. #extraHeaders) =
       pure (Left (InvalidRequest "A request header is owned by the client"))
   | otherwise = bracket (try (HTTP.responseOpen request manager)) close $ \case
       Left exc -> pure (Left (TransportError Nothing (classify exc)))
       Right response -> runExceptT $ do
         let headers = HTTP.responseHeaders response
-            meta = ResponseMetadata (lookup "request-id" headers) (lookup "retry-after" headers) (statusCode (HTTP.responseStatus response))
+            meta =
+              ResponseMetadata
+                (lookup "request-id" headers)
+                (lookup "retry-after" headers)
+                (statusCode (HTTP.responseStatus response))
+                (lookup "x-request-id" headers)
+                (lookup "cf-ray" headers)
             readBody = ExceptT $ either (Left . TransportError (Just meta) . classify) Right <$> try (HTTP.brRead (HTTP.responseBody response))
         if meta ^. #status >= 200 && meta ^. #status < 300
           then Response meta <$> consume meta readBody
           else do
             -- The status and request ID remain available if the peer cuts off the error body.
             decoded <- ExceptT $ Right <$> runExceptT (collectBody readBody)
-            throwE (ApiStatusError meta (either (const Nothing) (apiErrorFromBody key) decoded))
+            throwE (ApiStatusError meta (either (const Nothing) (apiErrorFromBody client) decoded))
   where
-    key = maybe "" decodeUtf8Lenient (lookup "x-api-key" (HTTP.requestHeaders base))
     request =
       base
         { HTTP.method = method,
@@ -196,11 +205,20 @@ classify (HTTP.HttpExceptionRequest _ exc) = case exc of
   _ -> HttpFailure
 classify _ = HttpFailure
 
-apiErrorFromBody :: Text -> LBS.ByteString -> Maybe ApiError
-apiErrorFromBody key body = do
-  ErrorEnvelope (ApiError kind detail) <- either (const Nothing) Just (eitherDecode body)
-  let redact = if Text.null key then id else Text.replace key "[redacted]"
-  pure (ApiError (redact kind) (redact detail))
+clientApiVersion :: Client -> Maybe ByteString
+clientApiVersion (Client _ base) = lookup "anthropic-version" (HTTP.requestHeaders base)
+
+redactApiError :: Client -> ApiError -> ApiError
+redactApiError (Client _ base) (ApiError kind detail) =
+  ApiError (redact kind) (redact detail)
+  where
+    key = maybe "" decodeUtf8Lenient (lookup "x-api-key" (HTTP.requestHeaders base))
+    redact = if Text.null key then id else Text.replace key "[redacted]"
+
+apiErrorFromBody :: Client -> LBS.ByteString -> Maybe ApiError
+apiErrorFromBody client body = do
+  ErrorEnvelope err <- either (const Nothing) Just (eitherDecode body)
+  pure (redactApiError client err)
 
 newtype ErrorEnvelope = ErrorEnvelope ApiError
 

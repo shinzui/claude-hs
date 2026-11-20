@@ -16,6 +16,11 @@ provenance:
       at: 2026-11-20T20:25:29Z
       mode: "update"
       note: "Use the Seihou-generated Nix development shell for client builds and tests."
+    - model: "gpt-6.2-sol"
+      harness: "codex-cli"
+      at: 2026-11-20T20:40:16Z
+      mode: "implement"
+      note: "Implement scoped SSE delivery, typed events and streaming acceptance fixtures."
 ---
 
 # Stream message events as they arrive
@@ -32,8 +37,8 @@ Deliver typed Claude events while a request is still running, so a Baikai consum
 
 ## Progress
 
-- [ ] A public callback receives the first event before the server sends the rest, and stopping releases the response.
-- [ ] Fragmentation, new feature events, in-stream errors and premature closure pass the fixture suite.
+- [x] 2026-11-20. The gated loopback proves first-event delivery and observes socket closure on caller stop, callback failure, cancellation and provider completion.
+- [x] 2026-11-20. Whole and byte-fragmented transcripts match. The suite verifies signed tool replay, citation and usage deltas, malformed events, in-stream errors and unexpected EOF.
 
 ## Surprises & Discoveries
 
@@ -44,6 +49,8 @@ Deliver typed Claude events while a request is still running, so a Baikai consum
 
 
 ## Outcomes & Retrospective
+
+The library, example and credential-free loopback suite passed in the locked shell. The callback receives response correlation alongside each event. A versioned JSON bridge supports the consumer trial and rejects sampling settings removed by the selected version.
 
 
 

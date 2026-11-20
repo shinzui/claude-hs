@@ -137,18 +137,18 @@ failureCases = do
     let call fixture = createMessage client (defaultRequestOptions {extraHeaders = [("x-fixture", fixture)]}) request
     call "rate-limit" >>= \case
       Left err@(ApiStatusError meta (Just (ApiError "rate_limit_error" detail))) -> do
-        assert "retry metadata" (meta == ResponseMetadata (Just "req_rate") (Just "3") 429)
+        assert "retry metadata" (meta == ResponseMetadata (Just "req_rate") (Just "3") 429 Nothing Nothing)
         assertEqual "redacted detail" "Echo [redacted]" detail
         assert "secret absent from Show" (not ("loopback-secret" `isInfixOf` show err))
       _ -> fail "Expected structured rate limit"
     call "gateway" >>= \case
-      Left (ApiStatusError (ResponseMetadata Nothing Nothing 502) Nothing) -> pure ()
+      Left (ApiStatusError (ResponseMetadata Nothing Nothing 502 Nothing Nothing) Nothing) -> pure ()
       _ -> fail "Expected non-JSON status error"
     call "invalid-json" >>= \case
-      Left (DecodeError (ResponseMetadata (Just "req_decode") Nothing 200) _) -> pure ()
+      Left (DecodeError (ResponseMetadata (Just "req_decode") Nothing 200 Nothing Nothing) _) -> pure ()
       _ -> fail "Expected JSON decode failure"
     call "redirect" >>= \case
-      Left (ApiStatusError (ResponseMetadata _ _ 302) Nothing) -> pure ()
+      Left (ApiStatusError (ResponseMetadata _ _ 302 Nothing Nothing) Nothing) -> pure ()
       _ -> fail "Expected redirect to be returned as HTTP failure"
     call "disconnect" >>= \case
       Left (TransportError _ Disconnected) -> pure ()
