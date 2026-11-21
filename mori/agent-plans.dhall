@@ -74,5 +74,101 @@ in  AgentPlans.AgentPlansCatalog::{
           , hard "mori://shinzui/claude-hs/plans/7-preserve-advanced-claude-response-and-streaming-evidence"
           ]
         }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.MasterPlan
+        , file = "docs/masterplans/3-assemble-streamed-claude-responses-for-conversation-replay.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.MasterPlan
+        , file = "docs/masterplans/4-run-client-tools-across-claude-conversation-turns.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.MasterPlan
+        , file = "docs/masterplans/5-use-files-and-document-artifacts-with-claude-messages.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.MasterPlan
+        , file = "docs/masterplans/6-complete-advanced-messages-controls-and-signed-compaction.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.MasterPlan
+        , file = "docs/masterplans/7-parse-structured-claude-outputs-into-haskell-values.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.ExecPlan
+        , file = "docs/plans/9-discover-available-claude-models-and-their-capabilities.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.ExecPlan
+        , file = "docs/plans/10-fold-message-events-into-a-complete-response.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.ExecPlan
+        , file = "docs/plans/11-return-the-assembled-message-from-a-live-stream.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        , dependencies =
+          [ hard "mori://shinzui/claude-hs/plans/10-fold-message-events-into-a-complete-response"
+          ]
+        }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.ExecPlan
+        , file = "docs/plans/12-execute-registered-client-tools-across-message-turns.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.ExecPlan
+        , file = "docs/plans/13-continue-tool-conversations-with-server-held-threads.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        , dependencies =
+          [ hard "mori://shinzui/claude-hs/plans/12-execute-registered-client-tools-across-message-turns"
+          ]
+        }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.ExecPlan
+        , file = "docs/plans/14-manage-files-through-the-direct-claude-api.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.ExecPlan
+        , file = "docs/plans/15-send-typed-documents-and-consume-generated-file-references.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        , dependencies =
+          [ hard "mori://shinzui/claude-hs/plans/14-manage-files-through-the-direct-claude-api"
+          ]
+        }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.ExecPlan
+        , file = "docs/plans/16-carry-advanced-request-controls-across-messages-endpoints.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.ExecPlan
+        , file = "docs/plans/17-compact-a-conversation-and-replay-its-signed-summary.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        , dependencies =
+          [ hard "mori://shinzui/claude-hs/plans/10-fold-message-events-into-a-complete-response"
+          ]
+        }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.ExecPlan
+        , file = "docs/plans/18-decode-schema-constrained-message-responses.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        }
+      , AgentPlans.ExposedPlan::{
+        , kind = AgentPlans.PlanKind.ExecPlan
+        , file = "docs/plans/19-request-and-parse-structured-outputs-across-unary-and-streaming-calls.md"
+        , status = AgentPlans.PlanStatus.NotStarted
+        , dependencies =
+          [ hard "mori://shinzui/claude-hs/plans/18-decode-schema-constrained-message-responses"
+          , hard "mori://shinzui/claude-hs/plans/11-return-the-assembled-message-from-a-live-stream"
+          ]
+        }
       ]
     }
